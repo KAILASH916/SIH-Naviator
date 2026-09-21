@@ -54,6 +54,8 @@ class OfflineMapManager(private val context: Context) {
         // this same constant instead of an independently hardcoded 18.0).
         const val MIN_ZOOM = 11
         const val MAX_ZOOM = 16
+        const val VISUAL_MAX_ZOOM = 17.0
+
 
         // Bounding box for Coimbatore metropolitan area (23.3 km x 20.7 km, ~482 sq km)
         val COIMBATORE_BOUNDS = BoundingBox(11.125, 77.070, 10.915, 76.880)

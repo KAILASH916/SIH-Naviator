@@ -52,4 +52,48 @@ class GpxExporterTest {
         assertTrue(xml.contains("<trkseg>"))
         assertTrue(xml.contains("</trkseg>"))
     }
+
+    @Test
+    fun testGenerateCsvStructure() {
+        val points = listOf(
+            GpxTrackPoint(
+                lat = 11.0168,
+                lon = 76.9558,
+                altMeters = 411.5,
+                timestampMs = 1700000000000L,
+                speedKmh = 25.4f,
+                headingDeg = 180.0f,
+                isBlackout = false
+            )
+        )
+        val csv = GpxExporter.generateCsv(points)
+        assertTrue(csv.contains("timestamp,latitude,longitude,altitude_m,speed_kmh,heading_deg,is_blackout"))
+        assertTrue(csv.contains("11.0168000"))
+        assertTrue(csv.contains("76.9558000"))
+        assertTrue(csv.contains("411.50"))
+        assertTrue(csv.contains("25.40"))
+        assertTrue(csv.contains("180.0"))
+        assertTrue(csv.contains("false"))
+    }
+
+    @Test
+    fun testGenerateJsonStructure() {
+        val points = listOf(
+            GpxTrackPoint(
+                lat = 11.0168,
+                lon = 76.9558,
+                altMeters = 411.5,
+                timestampMs = 1700000000000L,
+                speedKmh = 25.4f,
+                headingDeg = 180.0f,
+                isBlackout = true
+            )
+        )
+        val json = GpxExporter.generateJson(points, "Test Session")
+        assertTrue(json.contains("\"trackName\": \"Test Session\""))
+        assertTrue(json.contains("\"pointCount\": 1"))
+        assertTrue(json.contains("\"latitude\": 11.0168000"))
+        assertTrue(json.contains("\"longitude\": 76.9558000"))
+        assertTrue(json.contains("\"isBlackout\": true"))
+    }
 }

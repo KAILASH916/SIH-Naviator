@@ -167,7 +167,8 @@ object TrackImageExporter {
                     mapView.isTilesScaledToDpi = true
                     if (tileProvider != null) {
                         mapView.minZoomLevel = OfflineMapManager.MIN_ZOOM.toDouble()
-                        mapView.maxZoomLevel = OfflineMapManager.MAX_ZOOM.toDouble()
+                        mapView.maxZoomLevel = OfflineMapManager.VISUAL_MAX_ZOOM
+
                     }
 
                     mapView.measure(

@@ -90,14 +90,6 @@ class NavigationViewModel(
         navigationEngine.toggleBlackout()
     }
 
-    fun setMapOrientationMode(mode: com.example.gudumap.navigation.MapOrientationMode) {
-        navigationEngine.setMapOrientationMode(mode)
-    }
-
-    fun toggleMapOrientationMode() {
-        navigationEngine.toggleMapOrientationMode()
-    }
-
 
 
     fun startKinematicDemo(
@@ -159,6 +151,22 @@ class NavigationViewModel(
 
     fun exportGpxTrack(context: android.content.Context) {
         navigationEngine.exportGpxTrack(context)
+    }
+
+    fun exportCsvTrack(context: android.content.Context) {
+        navigationEngine.exportCsvTrack(context)
+    }
+
+    fun exportJsonTrack(context: android.content.Context) {
+        navigationEngine.exportJsonTrack(context)
+    }
+
+    fun clearSession() {
+        navigationEngine.clearSession()
+    }
+
+    fun start10sEvaluationMode() {
+        navigationEngine.start10sEvaluationMode()
     }
 
     fun exportTrackImageToGallery(context: android.content.Context): Boolean {

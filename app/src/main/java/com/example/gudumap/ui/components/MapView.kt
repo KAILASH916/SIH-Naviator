@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -34,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -44,6 +47,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.ui.res.painterResource
 import com.example.gudumap.R
 import com.example.gudumap.map.MapMatcher
+import android.widget.Toast
 import com.example.gudumap.map.OfflineMapManager
 import com.example.gudumap.navigation.CoordinateTransformer
 import org.osmdroid.tileprovider.tilesource.ITileSource
@@ -59,7 +63,7 @@ import com.example.gudumap.navigation.GpsState
 private const val MAX_TRAIL_POINTS = 2000
 private const val TAG = "Gudumap:MapView"
 
-private fun isValidMapCoordinate(latitude: Double, longitude: Double): Boolean {
+fun isValidMapCoordinate(latitude: Double, longitude: Double): Boolean {
     return latitude.isFinite() && longitude.isFinite() &&
         latitude in -90.0..90.0 && longitude in -180.0..180.0 &&
         (latitude != 0.0 || longitude != 0.0)
@@ -155,7 +159,6 @@ fun MapView(
     predictionTrailPoints: List<Pair<Double, Double>> = emptyList(),
     predictionTrailSegments: List<List<Pair<Double, Double>>> = emptyList(),
     visualMode: com.example.gudumap.navigation.NavigationVisualMode = com.example.gudumap.navigation.NavigationVisualMode.LIVE,
-    mapOrientationMode: com.example.gudumap.navigation.MapOrientationMode = com.example.gudumap.navigation.MapOrientationMode.NORTH_UP,
     lastTrustedGpsLat: Double? = null,
     lastTrustedGpsLon: Double? = null,
     lastTrustedGpsAccuracyMeters: Float? = null,
@@ -178,17 +181,12 @@ fun MapView(
     onMinimizeMap: (() -> Unit)? = null,
     onExpandMap: (() -> Unit)? = null,
     onMyLocationClick: (() -> Unit)? = null,
-    onToggleMapOrientation: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val effectiveMinZoom = when {
-        isExpanded -> 12.0
-        isMinimized -> 13.5
-        else -> 12.8
-    }
+    val effectiveMinZoom = OfflineMapManager.MIN_ZOOM.toDouble()
 
     val recordedTrail = remember { mutableListOf<GeoPoint>() }
     val naiveTrail = remember { mutableListOf<GeoPoint>() }
@@ -218,16 +216,28 @@ fun MapView(
         }
     }
 
-    Box(
-        modifier = modifier
+    val boxModifier = if (isExpanded) {
+        Modifier.fillMaxSize()
+    } else {
+        modifier
             .fillMaxWidth()
-            .then(
-                when {
-                    isExpanded -> Modifier.fillMaxSize()
-                    isMinimized -> Modifier.height(140.dp)
-                    else -> Modifier.height(340.dp)
-                }
-            )
+            .height(if (isMinimized) 140.dp else 340.dp)
+    }
+
+    val darkMapBlue = Color(0xFF0F172A)
+    val darkMapAndroidColor = AndroidColor.rgb(15, 23, 42)
+
+    Box(
+        modifier = boxModifier
+            .background(darkMapBlue)
+            .onGloballyPositioned { coordinates ->
+                try {
+                    Log.d(
+                        TAG,
+                        "PARENT_MAP_CONTAINER: width=${coordinates.size.width}, height=${coordinates.size.height}"
+                    )
+                } catch (_: Throwable) {}
+            }
             .clip(RoundedCornerShape(if (isExpanded) 0.dp else 20.dp))
             .clipToBounds()
             .border(
@@ -275,6 +285,15 @@ fun MapView(
                 }
 
                 mapView.apply {
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    if (isExpanded) {
+                        setScrollableAreaLimitDouble(null)
+                    } else {
+                        setScrollableAreaLimitDouble(OfflineMapManager.COIMBATORE_BOUNDS)
+                    }
                     setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
                     setMultiTouchControls(true)
                     zoomController.setVisibility(org.osmdroid.views.CustomZoomButtonsController.Visibility.NEVER)
@@ -288,13 +307,11 @@ fun MapView(
                         false
                     }
 
-                    overlayManager.tilesOverlay.setLoadingBackgroundColor(
-                        if (isDarkMode) AndroidColor.rgb(15, 23, 42) else AndroidColor.rgb(241, 245, 249)
-                    )
+                    overlayManager.tilesOverlay.setLoadingBackgroundColor(darkMapAndroidColor)
                     overlayManager.tilesOverlay.setLoadingLineColor(AndroidColor.TRANSPARENT)
 
                     minZoomLevel = effectiveMinZoom
-                    maxZoomLevel = OfflineMapManager.MAX_ZOOM.toDouble()
+                    maxZoomLevel = OfflineMapManager.VISUAL_MAX_ZOOM
                     controller.setZoom(15.5)
 
                     addMapListener(object : org.osmdroid.events.MapListener {
@@ -305,16 +322,14 @@ fun MapView(
                         }
                     })
 
-                    val initialPoint = if (isValidMapCoordinate(latitude, longitude)) {
+                    val initialPoint = if (hasGpsFix && isValidMapCoordinate(latitude, longitude)) {
                         GeoPoint(latitude, longitude)
                     } else {
                         OfflineMapManager.COIMBATORE_CENTER
                     }
                     controller.setCenter(initialPoint)
 
-                    setBackgroundColor(
-                        if (isDarkMode) AndroidColor.rgb(15, 23, 42) else AndroidColor.rgb(241, 245, 249)
-                    )
+                    setBackgroundColor(darkMapAndroidColor)
 
                     // Add scale bar overlay for distance scaling reference
                     try {
@@ -381,16 +396,56 @@ fun MapView(
                 mapView
             },
             update = { map ->
+                var needsRelayout = false
+                if (map.layoutParams?.width != android.view.ViewGroup.LayoutParams.MATCH_PARENT ||
+                    map.layoutParams?.height != android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                ) {
+                    map.layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    needsRelayout = true
+                }
+
+                if (!map.isTilesScaledToDpi) {
+                    map.isTilesScaledToDpi = true
+                    needsRelayout = true
+                }
+
+                if (isExpanded) {
+                    map.setScrollableAreaLimitDouble(null)
+                } else {
+                    map.setScrollableAreaLimitDouble(OfflineMapManager.COIMBATORE_BOUNDS)
+                }
+
+                if (needsRelayout) {
+                    map.requestLayout()
+                    map.invalidate()
+                }
+
+                try {
+                    val dm = context.resources.displayMetrics
+                    Log.d(
+                        TAG,
+                        "MAPVIEW_DIMENSIONS_DEBUG: Screen=${dm.widthPixels}x${dm.heightPixels}, " +
+                        "MapView=${map.width}x${map.height}, LayoutParams=${map.layoutParams?.width}x${map.layoutParams?.height}, " +
+                        "isExpanded=$isExpanded"
+                    )
+                } catch (_: Throwable) {}
+
                 map.minZoomLevel = effectiveMinZoom
-                map.maxZoomLevel = OfflineMapManager.MAX_ZOOM.toDouble()
+                map.maxZoomLevel = OfflineMapManager.VISUAL_MAX_ZOOM
                 currentZoomDouble = map.zoomLevelDouble
                 if (map.zoomLevelDouble < effectiveMinZoom) {
                     map.controller.setZoom(effectiveMinZoom)
                     currentZoomDouble = effectiveMinZoom
-                } else if (map.zoomLevelDouble > OfflineMapManager.MAX_ZOOM.toDouble()) {
-                    map.controller.setZoom(OfflineMapManager.MAX_ZOOM.toDouble())
-                    currentZoomDouble = OfflineMapManager.MAX_ZOOM.toDouble()
+                } else if (map.zoomLevelDouble > OfflineMapManager.VISUAL_MAX_ZOOM) {
+                    map.controller.setZoom(OfflineMapManager.VISUAL_MAX_ZOOM)
+                    currentZoomDouble = OfflineMapManager.VISUAL_MAX_ZOOM
                 }
+
+                // Fixed North-Up Map Orientation
+                map.mapOrientation = 0f
 
                 val colorFilter = if (isDarkMode) {
                     val matrix = floatArrayOf(
@@ -403,23 +458,14 @@ fun MapView(
                 } else null
                 map.overlayManager.tilesOverlay.setColorFilter(colorFilter)
 
-                val isFallbackActive = !isDemoModeEnabled && (blackoutMode || visualMode == com.example.gudumap.navigation.NavigationVisualMode.GPS_FALLBACK)
-                val hasValidLocation = if (isDemoModeEnabled || locationProvider == "demo") {
-                    isValidMapCoordinate(latitude, longitude)
-                } else {
-                    (hasGpsFix || isFallbackActive) && isValidMapCoordinate(latitude, longitude)
-                }
+                val hasValidPosition = isValidMapCoordinate(latitude, longitude)
+                val currentPoint = if (hasValidPosition) GeoPoint(latitude, longitude) else null
 
-                val hasRealFix = hasValidLocation
-                val currentPoint = if (hasRealFix || isValidMapCoordinate(latitude, longitude)) {
-                    GeoPoint(latitude, longitude)
-                } else null
-
-                if (currentPoint != null && hasRealFix) {
+                if (currentPoint != null && hasValidPosition) {
                     recordedTrail.add(currentPoint)
                     if (recordedTrail.size > MAX_TRAIL_POINTS) recordedTrail.removeAt(0)
                     try {
-                        Log.d("GUDUMAP_POS_TRACE", "MAP_RENDER: hasRealFix=true, visualMode=$visualMode, lat=${currentPoint.latitude}, lon=${currentPoint.longitude}, predTrailCount=${predictionTrailPoints.size}")
+                        Log.d("GUDUMAP_POS_TRACE", "MAP_RENDER: hasValidPosition=true, visualMode=$visualMode, lat=${currentPoint.latitude}, lon=${currentPoint.longitude}, predTrailCount=${predictionTrailPoints.size}")
                     } catch (_: Throwable) {}
                 }
 
@@ -434,7 +480,7 @@ fun MapView(
                 }
 
                 val existingMarker = map.overlays.filterIsInstance<Marker>().firstOrNull { it.id == "vehicle_marker" }
-                if (hasRealFix && currentPoint != null) {
+                if (hasValidPosition && currentPoint != null) {
                     val pt = currentPoint
                     val marker = existingMarker
                         ?: Marker(map).also {
@@ -449,12 +495,13 @@ fun MapView(
                     marker.setFlat(true)
 
                     val targetRotation = CoordinateTransformer.computeMarkerRotation(headingDeg)
-                    marker.rotation = targetRotation
+                    val lerpedRotation = interpolateAngle(marker.rotation, targetRotation, 0.35f)
+                    marker.rotation = lerpedRotation
                     try {
-                        Log.d("GUDUMAP_PDR_DEMO", "MarkerRotationUpdate: headingDeg=$headingDeg, targetRotation=$targetRotation, lat=${pt.latitude}, lon=${pt.longitude}")
+                        Log.d("GUDUMAP_PDR_DEMO", "MarkerRotationUpdate: headingDeg=$headingDeg, targetRotation=$targetRotation, lerpedRotation=$lerpedRotation, lat=${pt.latitude}, lon=${pt.longitude}")
                     } catch (_: Throwable) {}
 
-                    marker.title = if (roadName.isNotBlank()) "📍 $roadName" else "📍 Location"
+                    marker.title = if (roadName.isNotBlank()) roadName else "Location"
                     marker.snippet = "Lat: %.5f, Lon: %.5f".format(pt.latitude, pt.longitude)
 
                     val iconRes = when {
@@ -467,11 +514,26 @@ fun MapView(
                     if (iconDrawable != null) {
                         marker.icon = iconDrawable
                     }
+
+                    // Ensure navigation marker is at top of overlays order so route/circle never covers it
+                    if (map.overlays.lastOrNull() != marker) {
+                        map.overlays.remove(marker)
+                        map.overlays.add(marker)
+                    }
                 } else if (existingMarker != null) {
                     map.overlays.remove(existingMarker)
                 }
 
                 // 1. LIVE GPS Movement Trail (BLUE) - ONLY rendered when Demo Mode is OFF
+                val gpsCasingPolyline = map.overlays
+                    .filterIsInstance<Polyline>()
+                    .firstOrNull { it.id == "recorded_gps_trail_casing" }
+                    ?: Polyline(map).also {
+                        it.id = "recorded_gps_trail_casing"
+                        it.outlinePaint.color = if (isDarkMode) AndroidColor.rgb(15, 23, 42) else AndroidColor.WHITE
+                        it.outlinePaint.strokeWidth = 10f
+                        map.overlays.add(0, it)
+                    }
                 val gpsPolyline = map.overlays
                     .filterIsInstance<Polyline>()
                     .firstOrNull { it.id == "recorded_gps_trail" }
@@ -492,6 +554,7 @@ fun MapView(
                         it.latitude != gpsPointsToRender.last().first || it.longitude != gpsPointsToRender.last().second
                     } == true)
                 if (needsGpsUpdate) {
+                    gpsCasingPolyline.setPoints(gpsPointsToRender.map { GeoPoint(it.first, it.second) })
                     gpsPolyline.setPoints(gpsPointsToRender.map { GeoPoint(it.first, it.second) })
                 }
 
@@ -571,13 +634,13 @@ fun MapView(
                 }
 
                 // 4. LAST KNOWN (LK) LOCATION PIN MARKERS
-                // Only shown when GPS is unavailable; disappears once GPS becomes available
-                val isGpsUnavailable = blackoutMode || visualMode == com.example.gudumap.navigation.NavigationVisualMode.GPS_FALLBACK || !hasGpsFix || gpsState != GpsState.FIXED
-                val shouldShowLk = !isDemoModeEnabled && isGpsUnavailable
+                // Only shown during active DR blackout or GPS fallback after a valid fix; hidden before initial fix
+                val isBlackoutOrFallback = blackoutMode || visualMode == com.example.gudumap.navigation.NavigationVisualMode.GPS_FALLBACK
+                val shouldShowLk = !isDemoModeEnabled && isBlackoutOrFallback && (lastTrustedGpsLat != null || historicalLkMarkers.isNotEmpty())
 
                 val lkMarkersToRender = if (shouldShowLk) {
                     if (historicalLkMarkers.isNotEmpty()) {
-                        historicalLkMarkers
+                        historicalLkMarkers.takeLast(1)
                     } else if (lastTrustedGpsLat != null && lastTrustedGpsLon != null && isValidMapCoordinate(lastTrustedGpsLat, lastTrustedGpsLon)) {
                         listOf(
                             com.example.gudumap.navigation.LkMarkerData(
@@ -674,9 +737,9 @@ fun MapView(
                         uncertaintyCircle.outlinePaint.color = AndroidColor.argb(190, 245, 158, 11) // Amber #F59E0B ~75% opacity
                         uncertaintyCircle.outlinePaint.strokeWidth = 3f
                         val demoCenter = GeoPoint(latitude, longitude)
-                        val demoUncertainty = if (predictionUncertaintyMeters > 0.0) predictionUncertaintyMeters else 15.0
-                        uncertaintyCircle.title = "Simulated search area · ${demoUncertainty.toInt()} m"
+                        val demoUncertainty = if (predictionUncertaintyMeters > 0.0) predictionUncertaintyMeters else 0.0
                         if (isValidMapCoordinate(demoCenter.latitude, demoCenter.longitude) && demoUncertainty > 0.0) {
+                            uncertaintyCircle.title = "Simulated search area · ${demoUncertainty.toInt()} m"
                             uncertaintyCircle.setPoints(Polygon.pointsAsCircle(demoCenter, demoUncertainty))
                         } else {
                             uncertaintyCircle.setPoints(emptyList())
@@ -693,10 +756,10 @@ fun MapView(
                     val predLat = lastPredictedLat ?: latitude
                     val predLon = lastPredictedLon ?: longitude
                     val predCenter = if (isValidMapCoordinate(predLat, predLon)) GeoPoint(predLat, predLon) else currentPoint
-                    val effectiveUncertainty = if (predictionUncertaintyMeters > 0.0) predictionUncertaintyMeters else if (uncertaintyRadiusMeters > 0.0) uncertaintyRadiusMeters else 15.0
-                    uncertaintyCircle.title = "Estimated search area · ${effectiveUncertainty.toInt()} m"
+                    val effectiveUncertainty = if (predictionUncertaintyMeters > 0.0) predictionUncertaintyMeters else if (uncertaintyRadiusMeters > 0.0) uncertaintyRadiusMeters else 0.0
 
                     if (predCenter != null && isValidMapCoordinate(predCenter.latitude, predCenter.longitude) && effectiveUncertainty > 0.0) {
+                        uncertaintyCircle.title = "Estimated search area · ${effectiveUncertainty.toInt()} m"
                         uncertaintyCircle.setPoints(Polygon.pointsAsCircle(predCenter, effectiveUncertainty))
                     } else {
                         uncertaintyCircle.setPoints(emptyList())
@@ -708,15 +771,18 @@ fun MapView(
                     uncertaintyCircle.outlinePaint.strokeWidth = 2f
                     uncertaintyCircle.title = "GPS Accuracy · ${locationAccuracyMeters.toInt()} m"
                     val displayRadius = if (locationAccuracyMeters > 0f) locationAccuracyMeters.toDouble() else uncertaintyRadiusMeters
-                    if (hasRealFix && currentPoint != null && displayRadius > 0.0) {
+                    if (hasValidPosition && currentPoint != null && displayRadius > 0.0) {
                         uncertaintyCircle.setPoints(Polygon.pointsAsCircle(currentPoint, displayRadius))
                     } else {
                         uncertaintyCircle.setPoints(emptyList())
                     }
                 }
 
-                if (followUser && hasRealFix && currentPoint != null) {
-                    map.controller.setCenter(currentPoint)
+                if (followUser && hasValidPosition && currentPoint != null) {
+                    val distMeters = currentPoint.distanceToAsDouble(map.mapCenter)
+                    if (distMeters > 3.0) {
+                        map.controller.setCenter(currentPoint)
+                    }
                 }
                 map.mapOrientation = 0f
                 map.invalidate()
@@ -758,37 +824,6 @@ fun MapView(
             "Coverage state: $coverageState"
         )
 
-        val usingOfflineMap = offlineMapStatus == "AVAILABLE"
-
-        if (!isDemoModeEnabled && !hasValidLocation) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 36.dp),
-                shape = RoundedCornerShape(14.dp),
-                color = if (isDarkMode) Color(0xEE1E293B) else Color(0xEEFFFFFF),
-                shadowElevation = 3.dp
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Starting location needed for position prediction",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isDarkMode) Color.White else Color(0xFF0F172A)
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Turn on Location to acquire initial fix",
-                        fontSize = 11.sp,
-                        color = if (isDarkMode) Color(0xFFCBD5E1) else Color(0xFF64748B)
-                    )
-                }
-            }
-        }
-
         if (coverageState == CoverageState.OUT_OF_COVERAGE) {
             Surface(
                 modifier = Modifier
@@ -803,7 +838,12 @@ fun MapView(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("⚠️", fontSize = 12.sp)
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = Color(0xFFB91C1C)
+                    )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = "Offline map unavailable for this area",
@@ -869,16 +909,16 @@ fun MapView(
                 .clickable {
                     followUser = true
                     onMyLocationClick?.invoke()
-                    val currentPoint = if (isValidMapCoordinate(latitude, longitude)) {
-                        GeoPoint(latitude, longitude)
+                    if (isValidMapCoordinate(latitude, longitude)) {
+                        val currentPoint = GeoPoint(latitude, longitude)
+                        val curZoom = osmMapRef?.zoomLevelDouble ?: 15.5
+                        val targetZoom = curZoom.coerceIn(effectiveMinZoom, OfflineMapManager.VISUAL_MAX_ZOOM)
+                        osmMapRef?.controller?.setZoom(targetZoom)
+                        osmMapRef?.controller?.setCenter(currentPoint)
+                        osmMapRef?.invalidate()
                     } else {
-                        OfflineMapManager.COIMBATORE_CENTER
+                        Toast.makeText(context, "Waiting for location fix", Toast.LENGTH_SHORT).show()
                     }
-                    val curZoom = osmMapRef?.zoomLevelDouble ?: 15.5
-                    val targetZoom = curZoom.coerceIn(effectiveMinZoom, OfflineMapManager.MAX_ZOOM.toDouble())
-                    osmMapRef?.controller?.setZoom(targetZoom)
-                    osmMapRef?.controller?.setCenter(currentPoint)
-                    osmMapRef?.invalidate()
                 },
             shape = CircleShape,
             color = if (isDarkMode) Color(0xFF1E293B) else Color.White,
@@ -897,7 +937,8 @@ fun MapView(
         // Zoom & Expand Map Control Stack (~48dp touch targets)
         if (onToggleExpand != null || onMinimizeMap != null) {
             val canZoomOut = currentZoomDouble > effectiveMinZoom + 0.05
-            val canZoomIn = currentZoomDouble < OfflineMapManager.MAX_ZOOM.toDouble() - 0.05
+            val canZoomIn = currentZoomDouble < OfflineMapManager.VISUAL_MAX_ZOOM - 0.05
+
 
             Row(
                 modifier = Modifier

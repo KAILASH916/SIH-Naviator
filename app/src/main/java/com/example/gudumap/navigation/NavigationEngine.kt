@@ -12,7 +12,9 @@ import android.util.Log
 import com.example.gudumap.map.MapMatcher
 import com.example.gudumap.sensor.ImuSample
 import com.example.gudumap.sensor.OrientationSample
+import com.example.gudumap.sensors.HeadingConfidence
 import com.example.gudumap.sensors.LocationManager
+
 import com.example.gudumap.sensors.SensorFusionManager
 import com.example.gudumap.sensors.SensorManager
 import kotlinx.coroutines.CoroutineScope
@@ -68,20 +70,13 @@ class NavigationEngine(
     companion object {
         private const val TAG = "Gudumap:NavEngine"
 
-        private const val GPS_FRESHNESS_MS = 5_000L
-        private const val MAX_ACCEPTED_FIX_AGE_MS = 30_000L
-
-        private const val STATE_INTERVAL_MS = 80L
-        private const val STATUS_TICK_MS = 250L
-
-        private const val MAX_TRAIL_POINTS = 2_000
-        private const val TRAIL_MIN_DISTANCE_METERS = 0.1
-
-        private const val MAX_GYRO_PAIR_AGE_NS =
-            250_000_000L
+        private const val MAX_GYRO_PAIR_AGE_NS = 250_000_000L
     }
 
     private val engineLock = Any()
+
+    val isClosed: Boolean
+        get() = synchronized(engineLock) { closed }
 
     private val scope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -107,12 +102,59 @@ class NavigationEngine(
 
     private var isInternetAvailable = false
 
+    private val gnssQualityEvaluator = GnssQualityEvaluator()
+    private var lastEstimatorUpdateTimeMs = 0L
+    private var lastMapMatchingTimeMs = 0L
+
     private var latestRawGnssLocation: Location? = null
     private var lastKnownValidGpsLocation: Location? = null
     private var latestFilteredGpsResult: FilteredGpsResult? = null
 
     private var latestLocationReceivedElapsedMs = 0L
+    private var lastAnyGnssFixElapsedMs = 0L
+    private var lastTrustedGnssFixElapsedMs = 0L
+    private var acceptedGnssFixCount = 0
+    private var rejectedGnssFixCount = 0
     private var hasReceivedRealGnssFix = false
+    private var consecutiveFreshRecoveryFixes = 0
+
+    fun calibratePhoneMount(pitchDeg: Float, rollDeg: Float, yawDeg: Float) {
+        synchronized(engineLock) {
+            sensorFusionManager.phoneMountCalibrator.calibrate(pitchDeg, rollDeg, yawDeg)
+            sensorFusionManager.phoneMountCalibrator.saveToPreferences(context)
+            emitStateLocked(force = true)
+        }
+    }
+
+    fun calibratePhoneMountFromGravity(ax: Float, ay: Float, az: Float, headingDeg: Float = 0f) {
+        synchronized(engineLock) {
+            sensorFusionManager.phoneMountCalibrator.calibrateFromGravity(ax, ay, az, headingDeg)
+            sensorFusionManager.phoneMountCalibrator.saveToPreferences(context)
+            emitStateLocked(force = true)
+        }
+    }
+
+    fun resetPhoneMountCalibration() {
+        synchronized(engineLock) {
+            sensorFusionManager.phoneMountCalibrator.resetCalibration(context)
+            emitStateLocked(force = true)
+        }
+    }
+
+
+    private fun logNavigationStateTransition(
+        oldState: String,
+        newState: String,
+        reason: String,
+        fixAgeMs: Long,
+        accuracyMeters: Float,
+        provider: String
+    ) {
+        Log.i(
+            TAG,
+            "NAV_STATE_TRANSITION: [$oldState] -> [$newState] | Reason: $reason | FixAge: ${fixAgeMs}ms | Accuracy: ${accuracyMeters}m | Provider: $provider"
+        )
+    }
 
     private var lastTrustedGpsLat: Double? = null
     private var lastTrustedGpsLon: Double? = null
@@ -153,9 +195,6 @@ class NavigationEngine(
 
     private var lastStateEmitElapsedMs = 0L
 
-    private var currentMapOrientationMode =
-        MapOrientationMode.NORTH_UP
-
     private val recordedGpxPoints = mutableListOf<GpxTrackPoint>()
     private val demoTrailPointsList =
         mutableListOf<Pair<Double, Double>>()
@@ -190,6 +229,13 @@ class NavigationEngine(
     private var blackoutSpeedCount = 0
 
     private var storedBlackoutMetrics = BlackoutMetrics()
+
+    private var smoothedSpeedKmh = 0f
+    private var evaluationActive = false
+    private var evaluationStartElapsedMs = 0L
+    private val evaluationGroundTruthFixes = mutableListOf<Location>()
+    private var evaluationJob: Job? = null
+    private var evaluationTimeRemainingSec = 0
 
     val isKinematicDemoActiveRunning: Boolean
         get() = synchronized(engineLock) {
@@ -238,7 +284,7 @@ class NavigationEngine(
 
             statusJob = scope.launch {
                 while (isActive) {
-                    delay(STATUS_TICK_MS)
+                    delay(NavigationConfig.STATUS_TICK_MS)
 
                     synchronized(engineLock) {
                         if (!paused && !closed) {
@@ -517,29 +563,22 @@ class NavigationEngine(
     private fun locationAgeMsLocked(
         location: Location? = latestRawGnssLocation
     ): Long {
-        if (location == null) return Long.MAX_VALUE
-
-        val fixTimestamp = location.elapsedRealtimeNanos
-
-        if (fixTimestamp > 0L) {
-            val difference =
-                SystemClock.elapsedRealtimeNanos() - fixTimestamp
-
-            return if (difference >= 0L) {
-                difference / 1_000_000L
-            } else {
-                Long.MAX_VALUE
+        if (location != null && location.elapsedRealtimeNanos > 0L) {
+            val difference = SystemClock.elapsedRealtimeNanos() - location.elapsedRealtimeNanos
+            if (difference >= 0L) {
+                return difference / 1_000_000L
             }
         }
 
-        if (latestLocationReceivedElapsedMs <= 0L) {
-            return Long.MAX_VALUE
+        if (lastAnyGnssFixElapsedMs > 0L) {
+            return (SystemClock.elapsedRealtime() - lastAnyGnssFixElapsedMs).coerceAtLeast(0L)
         }
 
-        return (
-                SystemClock.elapsedRealtime() -
-                        latestLocationReceivedElapsedMs
-                ).coerceAtLeast(0L)
+        if (latestLocationReceivedElapsedMs > 0L) {
+            return (SystemClock.elapsedRealtime() - latestLocationReceivedElapsedMs).coerceAtLeast(0L)
+        }
+
+        return Long.MAX_VALUE
     }
 
     private fun gpsUsableNowLocked(): Boolean {
@@ -549,7 +588,7 @@ class NavigationEngine(
                 location.provider != "demo" &&
                 locationManager.hasLocationPermission() &&
                 locationManager.isLocationEnabled() &&
-                locationAgeMsLocked(location) <= GPS_FRESHNESS_MS
+                locationAgeMsLocked(location) <= NavigationConfig.GPS_FRESHNESS_MS
     }
 
     private fun hasRealAnchorLocked(): Boolean {
@@ -585,7 +624,7 @@ class NavigationEngine(
                         location.elapsedRealtimeNanos
 
             if (age < 0L ||
-                age > MAX_ACCEPTED_FIX_AGE_MS * 1_000_000L
+                age > NavigationConfig.MAX_ACCEPTED_FIX_AGE_MS * 1_000_000L
             ) {
                 return false
             }
@@ -606,7 +645,7 @@ class NavigationEngine(
     private fun shouldAcceptLocationLocked(location: Location): Boolean {
         val previous = latestRawGnssLocation ?: return true
 
-        if (locationAgeMsLocked(previous) > GPS_FRESHNESS_MS) {
+        if (locationAgeMsLocked(previous) > NavigationConfig.GPS_FRESHNESS_MS) {
             return true
         }
 
@@ -631,8 +670,21 @@ class NavigationEngine(
     }
 
     private fun onGnssLocationChangedLocked(location: Location) {
-        if (!isUsableLocationLocked(location)) return
-        if (!shouldAcceptLocationLocked(location)) return
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        lastAnyGnssFixElapsedMs = nowElapsedMs
+
+        if (!isValidMapCoordinate(location.latitude, location.longitude)) {
+            rejectedGnssFixCount++
+            return
+        }
+
+        latestRawGnssLocation = Location(location)
+
+        if (!isUsableLocationLocked(location) || !shouldAcceptLocationLocked(location)) {
+            rejectedGnssFixCount++
+            emitStateLocked(force = true)
+            return
+        }
 
         val filtered = gpsFilter.processLocation(location)
 
@@ -642,14 +694,15 @@ class NavigationEngine(
                 filtered.filteredLongitude
             )
         ) {
+            rejectedGnssFixCount++
+            emitStateLocked(force = true)
             return
         }
 
+        acceptedGnssFixCount++
+        lastTrustedGnssFixElapsedMs = nowElapsedMs
         latestFilteredGpsResult = filtered
-        latestRawGnssLocation = Location(location)
-        latestLocationReceivedElapsedMs =
-            SystemClock.elapsedRealtime()
-
+        latestLocationReceivedElapsedMs = nowElapsedMs
         hasReceivedRealGnssFix = true
 
         /*
@@ -680,27 +733,58 @@ class NavigationEngine(
             return
         }
 
-        val recovered = blackoutActive && autoTriggeredByGpsLoss
+        val isFreshRecoveryFix = locationAgeMsLocked(trustedFix) <= NavigationConfig.GPS_FRESHNESS_MS &&
+                (!trustedFix.hasAccuracy() || trustedFix.accuracy <= NavigationConfig.MAX_GOOD_ACCURACY_METERS)
 
-        if (recovered) {
-            finishBlackoutMetricsLocked(trustedFix)
+        if (blackoutActive && autoTriggeredByGpsLoss) {
+            if (isFreshRecoveryFix) {
+                consecutiveFreshRecoveryFixes++
+            } else {
+                consecutiveFreshRecoveryFixes = 0
+            }
 
-            blackoutActive = false
-            autoTriggeredByGpsLoss = false
-            isSimulatedBlackoutMode = false
+            val isAccurateFix = trustedFix.hasAccuracy() && trustedFix.accuracy <= 15.0f
+            val confirmRecovery = consecutiveFreshRecoveryFixes >= NavigationConfig.REQUIRED_RECOVERY_FIX_COUNT || isAccurateFix
 
-            deadReckoningEngine.setBlackoutMode(false)
-            gnssNavMode = "GNSS_AVAILABLE"
+            if (confirmRecovery) {
+                finishBlackoutMetricsLocked(trustedFix)
 
-            _state.update {
-                it.copy(
-                    gnssRecovered = true,
-                    recoveryDriftMeters =
-                        storedBlackoutMetrics.positionErrorMeters,
-                    recoveryErrorPercent =
-                        storedBlackoutMetrics.driftPercentage
+                // Wire smooth re-anchoring to glide position smoothly to recovered GNSS fix (Priority 4)
+                deadReckoningEngine.startSmoothReanchoring(trustedFix.latitude, trustedFix.longitude)
+
+                blackoutActive = false
+                autoTriggeredByGpsLoss = false
+                isSimulatedBlackoutMode = false
+                consecutiveFreshRecoveryFixes = 0
+
+                deadReckoningEngine.setBlackoutMode(false)
+                gnssNavMode = "GNSS_AVAILABLE"
+
+                _state.update {
+                    it.copy(
+                        gnssRecovered = true,
+                        recoveryDriftMeters =
+                            storedBlackoutMetrics.positionErrorMeters,
+                        recoveryErrorPercent =
+                            storedBlackoutMetrics.driftPercentage
+                    )
+                }
+
+                logNavigationStateTransition(
+                    oldState = "GPS_FALLBACK",
+                    newState = "LIVE",
+                    reason = "GPS_RECOVERED_STABLE_FIX",
+                    fixAgeMs = locationAgeMsLocked(trustedFix),
+                    accuracyMeters = if (trustedFix.hasAccuracy()) trustedFix.accuracy else 0f,
+                    provider = trustedFix.provider ?: "GPS"
                 )
             }
+        }
+
+        if (evaluationActive) {
+            evaluationGroundTruthFixes.add(Location(trustedFix))
+            emitStateLocked(force = true)
+            return
         }
 
         if (!blackoutActive) {
@@ -809,7 +893,8 @@ class NavigationEngine(
 
     private fun enterNormalFallbackLocked(
         automatic: Boolean,
-        simulated: Boolean = false
+        simulated: Boolean = false,
+        transitionReason: String = "AUTOMATIC_LOSS"
     ): Boolean {
         if (isDemoModeEnabled || isKinematicDemoActive) return false
         if (!hasRealAnchorLocked()) return false
@@ -827,12 +912,13 @@ class NavigationEngine(
         lastTrustedGpsTimestampNs = System.currentTimeMillis()
 
         val lkMarker = LkMarkerData(
-            id = "lk_${System.currentTimeMillis()}_${historicalLkMarkersList.size}",
+            id = "lk_single",
             latitude = anchor.latitude,
             longitude = anchor.longitude,
             timestampNs = System.currentTimeMillis(),
             accuracyMeters = if (anchor.hasAccuracy()) anchor.accuracy else 5.0f
         )
+        historicalLkMarkersList.clear() // Priority 10: At most ONE Last Known GNSS marker
         historicalLkMarkersList.add(lkMarker)
 
         /*
@@ -854,6 +940,7 @@ class NavigationEngine(
         autoTriggeredByGpsLoss = automatic
         isSimulatedBlackoutMode = simulated
         gnssNavMode = "GNSS_BLACKOUT"
+        consecutiveFreshRecoveryFixes = 0
 
         val newSegment = mutableListOf<Pair<Double, Double>>(dr.latitude to dr.longitude)
         predictionTrailSegmentsList.add(newSegment)
@@ -864,27 +951,17 @@ class NavigationEngine(
         beginBlackoutMetricsLocked(dr.latitude, dr.longitude)
 
         _state.update { it.copy(gnssRecovered = false) }
+
+        logNavigationStateTransition(
+            oldState = "LIVE",
+            newState = "GPS_FALLBACK",
+            reason = transitionReason,
+            fixAgeMs = locationAgeMsLocked(anchor),
+            accuracyMeters = if (anchor.hasAccuracy()) anchor.accuracy else 0f,
+            provider = anchor.provider ?: "GPS"
+        )
+
         return true
-    }
-
-    private fun updateAutomaticFallbackLocked() {
-        if (paused || closed ||
-            isDemoModeEnabled || isKinematicDemoActive
-        ) {
-            return
-        }
-
-        if (!gpsUsableNowLocked() &&
-            hasRealAnchorLocked() &&
-            !blackoutActive
-        ) {
-            enterNormalFallbackLocked(automatic = true)
-        }
-
-        /*
-         * Recovery occurs in an accepted GNSS callback.
-         * Do not infer recovery simply from internet returning.
-         */
     }
 
     fun setBlackoutMode(
@@ -934,20 +1011,6 @@ class NavigationEngine(
     fun toggleBlackout() {
         synchronized(engineLock) {
             setBlackoutMode(!blackoutActive)
-        }
-    }
-
-    fun setMapOrientationMode(mode: MapOrientationMode) {
-        synchronized(engineLock) {
-            currentMapOrientationMode = MapOrientationMode.NORTH_UP
-            emitStateLocked(force = true)
-        }
-    }
-
-    fun toggleMapOrientationMode() {
-        synchronized(engineLock) {
-            currentMapOrientationMode = MapOrientationMode.NORTH_UP
-            emitStateLocked(force = true)
         }
     }
 
@@ -1289,26 +1352,27 @@ class NavigationEngine(
     }
 
     private fun stopKinematicDemoLocked() {
-        val wasRunning = isKinematicDemoActive
         cancelSimulationLocked()
+        isDemoModeEnabled = false
+        hasDemoStartAnchor = false
+        isSimulatedBlackoutMode = false
 
-        if (wasRunning && isDemoModeEnabled) {
-            if (isValidMapCoordinate(simulatedLat, simulatedLon)) {
-                /*
-                 * Clicking "Stop Demo" preserves the pointer location at the moved position
-                 * where simulation stopped. Re-anchor physical dead reckoning at (simulatedLat, simulatedLon).
-                 */
-                val movedAnchor = (lastKnownValidGpsLocation ?: Location(AndroidLocationManager.GPS_PROVIDER)).apply {
-                    latitude = simulatedLat
-                    longitude = simulatedLon
-                }
-                initializePhysicalDemoLocked(movedAnchor)
-            } else {
-                hasDemoStartAnchor = false
-                blackoutActive = false
-                deadReckoningEngine.setBlackoutMode(false)
-                demoTrailPointsList.clear()
+        if (gpsUsableNowLocked()) {
+            blackoutActive = false
+            gnssNavMode = "GNSS_AVAILABLE"
+            deadReckoningEngine.setBlackoutMode(false)
+            lastKnownValidGpsLocation?.let {
+                deadReckoningEngine.correctWithGnss(it)
             }
+        } else if (hasRealAnchorLocked() && deadReckoningEngine.isInitialized) {
+            blackoutActive = true
+            autoTriggeredByGpsLoss = true
+            gnssNavMode = "GNSS_BLACKOUT"
+            deadReckoningEngine.setBlackoutMode(true)
+        } else {
+            blackoutActive = false
+            gnssNavMode = "GNSS_AVAILABLE"
+            deadReckoningEngine.setBlackoutMode(false)
         }
     }
 
@@ -1378,7 +1442,7 @@ class NavigationEngine(
                 )
 
             if (!distance.isFinite() ||
-                distance < TRAIL_MIN_DISTANCE_METERS
+                distance < NavigationConfig.TRAIL_MIN_DISTANCE_METERS
             ) {
                 return
             }
@@ -1393,7 +1457,7 @@ class NavigationEngine(
                 val activeSegment = demoTrailSegmentsList.last()
                 if (activeSegment.lastOrNull() != (latitude to longitude)) {
                     activeSegment.add(latitude to longitude)
-                    if (activeSegment.size > MAX_TRAIL_POINTS) {
+                    if (activeSegment.size > NavigationConfig.MAX_TRAIL_POINTS) {
                         activeSegment.removeAt(0)
                     }
                 }
@@ -1403,36 +1467,59 @@ class NavigationEngine(
         if (trail === predictionTrailPointsList && predictionTrailSegmentsList.isNotEmpty()) {
             val activeSegment = predictionTrailSegmentsList.last()
             activeSegment.add(latitude to longitude)
-            if (activeSegment.size > MAX_TRAIL_POINTS) {
+            if (activeSegment.size > NavigationConfig.MAX_TRAIL_POINTS) {
                 activeSegment.removeAt(0)
             }
         }
 
-        if (trail.size > MAX_TRAIL_POINTS) {
+        if (trail.size > NavigationConfig.MAX_TRAIL_POINTS) {
             trail.removeAt(0)
         }
     }
 
+    private fun updateAutomaticFallbackLocked() {
+        if (paused || closed ||
+            isDemoModeEnabled || isKinematicDemoActive
+        ) {
+            return
+        }
+
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val anyFixAgeMs = if (lastAnyGnssFixElapsedMs > 0L) (nowElapsedMs - lastAnyGnssFixElapsedMs) else Long.MAX_VALUE
+        val isLocEnabled = locationManager.isLocationEnabled()
+        val hasPermission = locationManager.hasLocationPermission()
+
+        val immediateLossNeeded = (!isLocEnabled || !hasPermission) && hasRealAnchorLocked()
+        val sustainedLossNeeded = hasRealAnchorLocked() && anyFixAgeMs >= NavigationConfig.GPS_SUSTAINED_BLACKOUT_TIMEOUT_MS
+
+        if ((immediateLossNeeded || sustainedLossNeeded) && !blackoutActive) {
+            val reason = when {
+                !hasPermission -> "LOCATION_PERMISSION_REVOKED"
+                !isLocEnabled -> "LOCATION_SERVICES_DISABLED"
+                else -> "SUSTAINED_GPS_LOSS_${anyFixAgeMs}MS"
+            }
+            enterNormalFallbackLocked(automatic = true, transitionReason = reason)
+        }
+    }
+
     private fun resolvedGpsStateLocked(): GpsState {
+        val isLocEnabled = locationManager.isLocationEnabled()
+        val hasPermission = locationManager.hasLocationPermission()
+
+        if (!hasPermission) return GpsState.PERMISSION_REQUIRED
+        if (!isLocEnabled) return GpsState.GPS_DISABLED
+        if (!hasReceivedRealGnssFix) return GpsState.SEARCHING
+
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val anyFixAgeMs = if (lastAnyGnssFixElapsedMs > 0L) (nowElapsedMs - lastAnyGnssFixElapsedMs) else Long.MAX_VALUE
+        val trustedFixAgeMs = if (lastTrustedGnssFixElapsedMs > 0L) (nowElapsedMs - lastTrustedGnssFixElapsedMs) else Long.MAX_VALUE
+        val accuracy = latestFilteredGpsResult?.accuracyMeters ?: (latestRawGnssLocation?.accuracy ?: 50f)
+
         return when {
-            !locationManager.hasLocationPermission() ->
-                GpsState.PERMISSION_REQUIRED
-
-            !locationManager.isLocationEnabled() ->
-                GpsState.GPS_DISABLED
-
-            !hasReceivedRealGnssFix ->
-                GpsState.SEARCHING
-
-            locationAgeMsLocked() > 15_000L ->
-                GpsState.LOST
-
-            locationAgeMsLocked() > GPS_FRESHNESS_MS ->
-                GpsState.STALE
-
-            (latestFilteredGpsResult?.accuracyMeters ?: 50f) > 25f ->
-                GpsState.WEAK
-
+            blackoutActive -> GpsState.LOST
+            anyFixAgeMs >= NavigationConfig.GPS_SUSTAINED_BLACKOUT_TIMEOUT_MS -> GpsState.LOST
+            trustedFixAgeMs >= NavigationConfig.GPS_DEGRADED_TIMEOUT_MS || accuracy > NavigationConfig.MAX_GOOD_ACCURACY_METERS -> GpsState.STALE
+            consecutiveFreshRecoveryFixes in 1 until NavigationConfig.REQUIRED_RECOVERY_FIX_COUNT -> GpsState.ACQUIRING
             else -> GpsState.FIXED
         }
     }
@@ -1443,7 +1530,7 @@ class NavigationEngine(
         val nowElapsed = SystemClock.elapsedRealtime()
 
         if (!force &&
-            nowElapsed - lastStateEmitElapsedMs < STATE_INTERVAL_MS
+            nowElapsed - lastStateEmitElapsedMs < NavigationConfig.STATE_INTERVAL_MS
         ) {
             return
         }
@@ -1457,6 +1544,10 @@ class NavigationEngine(
         lastStateEmitElapsedMs = nowElapsed
 
         updateAutomaticFallbackLocked()
+
+        if (deadReckoningEngine.isReanchoring) {
+            deadReckoningEngine.stepSmoothReanchoring()
+        }
 
         /*
          * Read the estimator AFTER mode transitions.
@@ -1484,7 +1575,10 @@ class NavigationEngine(
             gpsFresh ->
                 latestFilteredGpsResult != null
 
-            else -> false
+            else ->
+                lastKnownValidGpsLocation != null ||
+                (latestRawGnssLocation != null && isValidMapCoordinate(latestRawGnssLocation!!.latitude, latestRawGnssLocation!!.longitude)) ||
+                isValidMapCoordinate(dr.latitude, dr.longitude)
         }
 
         var latitude = 0.0
@@ -1558,10 +1652,34 @@ class NavigationEngine(
 
                 distanceMeters = dr.distanceTravelled
             }
+
+            else -> {
+                val fallbackPos = when {
+                    lastKnownValidGpsLocation != null -> lastKnownValidGpsLocation!!.latitude to lastKnownValidGpsLocation!!.longitude
+                    latestRawGnssLocation != null && isValidMapCoordinate(latestRawGnssLocation!!.latitude, latestRawGnssLocation!!.longitude) -> latestRawGnssLocation!!.latitude to latestRawGnssLocation!!.longitude
+                    isValidMapCoordinate(dr.latitude, dr.longitude) -> dr.latitude to dr.longitude
+                    else -> 0.0 to 0.0
+                }
+                latitude = fallbackPos.first
+                longitude = fallbackPos.second
+                heading = deviceHeading
+                distanceMeters = dr.distanceTravelled
+            }
         }
 
         if (!speedKmh.isFinite() || speedKmh < 0f) {
             speedKmh = 0f
+        }
+
+        val rawSpeedKmh = speedKmh
+        smoothedSpeedKmh = NavigationConfig.SPEEDOMETER_ALPHA * rawSpeedKmh + (1f - NavigationConfig.SPEEDOMETER_ALPHA) * smoothedSpeedKmh
+        if (smoothedSpeedKmh < 0f) smoothedSpeedKmh = 0f
+
+        val isStationary = if (isKinematicDemoActive) (rawSpeedKmh == 0f) else dr.isStationary
+        val displayedSpeedKmh = if (isStationary || smoothedSpeedKmh < NavigationConfig.SPEED_ZERO_SNAP_THRESHOLD_KMH) {
+            0f
+        } else {
+            smoothedSpeedKmh
         }
 
         val visualMode = when {
@@ -1636,7 +1754,7 @@ class NavigationEngine(
                 "Live GPS"
 
             else ->
-                "Starting location needed for position prediction"
+                "Acquiring precise satellite location..."
         }
 
         sensorFusionManager.updateMagnetometerAccuracy(
@@ -1754,7 +1872,6 @@ class NavigationEngine(
 
         _state.update { previous ->
             previous.copy(
-                mapOrientationMode = MapOrientationMode.NORTH_UP,
                 movementState = movementState,
                 latitude = latitude,
                 longitude = longitude,
@@ -1790,15 +1907,19 @@ class NavigationEngine(
                     gpsFresh -> "GNSS_AVAILABLE"
                     else -> "WAITING_FOR_INITIAL_FIX"
                 },
-                mlStatus = if (
-                    deadReckoningEngine.modelRunner.ready &&
-                    dr.motionMode == "VEHICLE_MODE" &&
-                    !isKinematicDemoActive
-                ) "ACTIVE" else "INACTIVE",
-                ekfStatus =
-                    if (deadReckoningEngine.ekf.isInitialized) {
-                        "ACTIVE"
-                    } else "INACTIVE",
+                mlStatus = when {
+                    !deadReckoningEngine.modelRunner.ready -> "NOT_READY"
+                    (physicalPrediction || isKinematicDemoActive) && dr.motionMode == "VEHICLE_MODE" -> "INFERENCE_RUNNING"
+                    deadReckoningEngine.modelRunner.ready -> "MODEL_READY"
+                    else -> "INACTIVE"
+                },
+                ekfStatus = when {
+                    !deadReckoningEngine.ekf.isInitialized -> "UNINITIALIZED"
+                    physicalPrediction -> "PREDICTING"
+                    isKinematicDemoActive -> "SIMULATING"
+                    gpsFresh -> "GPS_ALIGNED"
+                    else -> "INITIALIZED"
+                },
                 mapStatus =
                     if (isInternetAvailable) "ONLINE" else "OFFLINE",
                 mlInferenceLatencyMs =
@@ -1891,11 +2012,64 @@ class NavigationEngine(
                 filteredHeadingDeg =
                     latestFilteredGpsResult?.filteredHeadingDeg ?: 0f,
                 gpsFixAgeMs = ageMs,
+                rawSpeedKmh = rawSpeedKmh,
+                filteredSpeedKmh = smoothedSpeedKmh,
+                displayedSpeedKmh = displayedSpeedKmh,
+                isEvaluationActive = evaluationActive,
+                evaluationTimeRemainingSec = evaluationTimeRemainingSec,
                 navigationSource = source,
+                positionSource = when {
+                    isKinematicDemoActive -> "DEMO SIMULATION"
+                    physicalPrediction -> "DEAD RECKONING"
+                    gpsFresh -> "FUSED (GNSS + EKF)"
+                    else -> "WAITING FOR GPS"
+                },
+                speedSource = when {
+                    isKinematicDemoActive -> "DEMO SIMULATION"
+                    physicalPrediction -> "EKF + AI DEAD RECKONING"
+                    gpsFresh -> "GNSS + EKF"
+                    else -> "UNAVAILABLE"
+                },
+                headingSource = when {
+                    isKinematicDemoActive -> "DEMO SIMULATION"
+                    physicalPrediction -> "INERTIAL ORIENTATION"
+                    else -> "FUSED ORIENTATION"
+                },
+                accuracySource = when {
+                    isKinematicDemoActive -> "SIMULATED SEARCH RADIUS"
+                    physicalPrediction -> "ESTIMATED EKF UNCERTAINTY"
+                    gpsFresh -> "GNSS MEASUREMENT ACCURACY"
+                    else -> "UNAVAILABLE"
+                },
+                appState = if (started) "READY" else "INITIALIZING",
+                gnssState = when {
+                    !hasReceivedRealGnssFix -> "ACQUIRING"
+                    blackoutActive -> "BLACKOUT"
+                    consecutiveFreshRecoveryFixes in 1 until NavigationConfig.REQUIRED_RECOVERY_FIX_COUNT -> "RECOVERING"
+                    gpsFresh -> gnssQualityEvaluator.currentQualityScore.name
+                    else -> "DEGRADED"
+                },
+                stationaryConfidence = deadReckoningEngine.zuptDetector.stationaryConfidence,
+                navigationConfidence = when {
+                    uncertainty <= NavigationConfig.HIGH_CONFIDENCE_UNCERTAINTY_METERS && sensorFusionManager.headingConfidence != HeadingConfidence.UNRELIABLE -> "HIGH"
+                    uncertainty <= NavigationConfig.MEDIUM_CONFIDENCE_UNCERTAINTY_METERS -> "MEDIUM"
+                    else -> "LOW"
+                },
+                zuptActive = deadReckoningEngine.zuptDetector.isStationary,
+                isMountCalibrated = sensorFusionManager.phoneMountCalibrator.isCalibrated,
+                mountPitchDeg = sensorFusionManager.phoneMountCalibrator.mountPitchDeg,
+                mountRollDeg = sensorFusionManager.phoneMountCalibrator.mountRollDeg,
+                mountYawDeg = sensorFusionManager.phoneMountCalibrator.mountYawDeg,
+                onnxInferenceTimeMs = deadReckoningEngine.lastInferenceLatency.toLong(),
+                estimatorUpdateTimeMs = lastEstimatorUpdateTimeMs,
+                mapMatchingTimeMs = lastMapMatchingTimeMs,
+                uiPublishRateHz = 10.0f,
+                sensorRateHz = 50.0f,
                 timestampNs = SystemClock.elapsedRealtimeNanos()
             )
         }
     }
+
 
     fun startGpxRecording() {
         synchronized(engineLock) {
@@ -1943,6 +2117,85 @@ class NavigationEngine(
             snapshot.first,
             snapshot.second
         )
+    }
+
+    fun exportCsvTrack(context: Context): java.io.File? {
+        val points = synchronized(engineLock) {
+            recordedGpxPoints.toList()
+        }
+        if (points.isEmpty()) return null
+        val csv = GpxExporter.generateCsv(points)
+        val file = GpxExporter.saveGpxToFile(context, csv, "naviator_track_${System.currentTimeMillis()}.csv")
+        if (file != null) {
+            GpxExporter.shareGpxFile(context, file, "text/csv")
+        }
+        return file
+    }
+
+    fun exportJsonTrack(context: Context): java.io.File? {
+        val points = synchronized(engineLock) {
+            recordedGpxPoints.toList()
+        }
+        if (points.isEmpty()) return null
+        val json = GpxExporter.generateJson(points)
+        val file = GpxExporter.saveGpxToFile(context, json, "naviator_track_${System.currentTimeMillis()}.json")
+        if (file != null) {
+            GpxExporter.shareGpxFile(context, file, "application/json")
+        }
+        return file
+    }
+
+    fun clearSession() {
+        synchronized(engineLock) {
+            demoTrailPointsList.clear()
+            demoTrailSegmentsList.clear()
+            gpsTrailPointsList.clear()
+            predictionTrailPointsList.clear()
+            predictionTrailSegmentsList.clear()
+            recordedGpxPoints.clear()
+            historicalLkMarkersList.clear()
+            emitStateLocked(force = true)
+        }
+    }
+
+    fun start10sEvaluationMode() {
+        synchronized(engineLock) {
+            if (closed || evaluationActive) return
+            evaluationActive = true
+            evaluationStartElapsedMs = SystemClock.elapsedRealtime()
+            evaluationGroundTruthFixes.clear()
+            evaluationTimeRemainingSec = NavigationConfig.EVALUATION_MODE_DURATION_SEC.toInt()
+
+            val anchor = lastKnownValidGpsLocation
+            if (anchor != null) {
+                beginBlackoutMetricsLocked(anchor.latitude, anchor.longitude)
+            }
+
+            evaluationJob = scope.launch {
+                for (remaining in NavigationConfig.EVALUATION_MODE_DURATION_SEC.toInt() downTo 1) {
+                    synchronized(engineLock) {
+                        evaluationTimeRemainingSec = remaining
+                    }
+                    emitStateLocked(force = true)
+                    delay(1000L)
+                }
+                synchronized(engineLock) {
+                    finishEvaluationModeLocked()
+                }
+            }
+            emitStateLocked(force = true)
+        }
+    }
+
+    private fun finishEvaluationModeLocked() {
+        evaluationActive = false
+        evaluationJob?.cancel()
+        evaluationJob = null
+        evaluationTimeRemainingSec = 0
+
+        val lastGt = evaluationGroundTruthFixes.lastOrNull() ?: lastKnownValidGpsLocation
+        finishBlackoutMetricsLocked(lastGt)
+        emitStateLocked(force = true)
     }
 
     fun stop() {

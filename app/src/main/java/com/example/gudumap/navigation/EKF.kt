@@ -565,6 +565,21 @@ class EKF(
         )
     }
 
+    /**
+     * Calculates 1-sigma horizontal position standard deviation (uncertainty radius in meters)
+     * derived mathematically from the diagonal elements of covariance matrix P:
+     * sigma_horizontal = sqrt(P_north_north + P_east_east)
+     */
+    fun getHorizontalUncertainty(): Double {
+        val variance = P[0][0] + P[1][1]
+        return if (variance > 0.0 && variance.isFinite()) {
+            kotlin.math.sqrt(variance)
+        } else {
+            0.0
+        }
+    }
+
+
     private fun matrixMultiply(
         A: Array<DoubleArray>,
         B: Array<DoubleArray>

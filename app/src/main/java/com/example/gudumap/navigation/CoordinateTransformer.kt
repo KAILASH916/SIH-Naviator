@@ -113,6 +113,24 @@ class CoordinateTransformer {
         }
 
         /**
+         * Converts 3D vector from Android World ENU (East, North, Up) frame to EKF World NED (North, East, Down) frame.
+         * North = ENU.y, East = ENU.x, Down = -ENU.z
+         */
+        fun enuToNed(enu: FloatArray): FloatArray {
+            require(enu.size == 3) { "ENU vector must have 3 elements" }
+            return floatArrayOf(enu[1], enu[0], -enu[2])
+        }
+
+        /**
+         * Converts 3D vector from EKF World NED (North, East, Down) frame to Android World ENU (East, North, Up) frame.
+         * East = NED.y, North = NED.x, Up = -NED.z
+         */
+        fun nedToEnu(ned: FloatArray): FloatArray {
+            require(ned.size == 3) { "NED vector must have 3 elements" }
+            return floatArrayOf(ned[1], ned[0], -ned[2])
+        }
+
+        /**
          * Computes the shortest angular difference between current angle and target angle in degrees [-180, 180].
          * Handles wrap-around across 359° -> 0° smoothly without spinning the long way around.
          */

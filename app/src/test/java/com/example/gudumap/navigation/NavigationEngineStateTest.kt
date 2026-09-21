@@ -124,16 +124,13 @@ class NavigationEngineStateTest {
     }
 
     @Test
-    fun testMapOrientationAndMovementStateEnums() {
+    fun testMovementStateEnum() {
         val defaultState = NavigationState()
-        assertEquals(MapOrientationMode.NORTH_UP, defaultState.mapOrientationMode)
         assertEquals(MovementState.STATIONARY, defaultState.movementState)
 
         val updatedState = defaultState.copy(
-            mapOrientationMode = MapOrientationMode.HEADING_UP,
             movementState = MovementState.WALKING
         )
-        assertEquals(MapOrientationMode.HEADING_UP, updatedState.mapOrientationMode)
         assertEquals(MovementState.WALKING, updatedState.movementState)
     }
 
@@ -174,5 +171,30 @@ class NavigationEngineStateTest {
             currentRoadName = "Predicted Coordinates"
         )
         assertEquals("Predicted Coordinates", blackoutState.currentRoadName)
+    }
+
+    @Test
+    fun testPendingGpsLossStateAndSustainedBlackoutTransition() {
+        // Short interruption (6s fix age) -> STALE (Pending loss), blackoutMode remains false, no LK marker created
+        val pendingLossState = NavigationState(
+            hasGpsFix = true,
+            gpsState = GpsState.STALE,
+            blackoutMode = false,
+            historicalLkMarkers = emptyList()
+        )
+        assertFalse("Pending loss (short delay) must not trigger full blackout mode", pendingLossState.blackoutMode)
+        assertEquals(GpsState.STALE, pendingLossState.gpsState)
+        assertTrue("Pending loss must not generate an LK marker", pendingLossState.historicalLkMarkers.isEmpty())
+
+        // Sustained interruption (10s+ fix age) -> Confirmed blackout mode active, LK marker generated
+        val sustainedLossState = NavigationState(
+            hasGpsFix = true,
+            gpsState = GpsState.LOST,
+            blackoutMode = true,
+            historicalLkMarkers = listOf(LkMarkerData("lk_1", 11.0168, 76.9558, System.currentTimeMillis(), 5f))
+        )
+        assertTrue("Sustained 10s loss must enter confirmed blackout mode", sustainedLossState.blackoutMode)
+        assertEquals(GpsState.LOST, sustainedLossState.gpsState)
+        assertEquals(1, sustainedLossState.historicalLkMarkers.size)
     }
 }

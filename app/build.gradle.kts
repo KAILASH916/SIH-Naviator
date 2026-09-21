@@ -60,6 +60,9 @@ dependencies {
 
     implementation(libs.androidx.compose.material3)
 
+    implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.compose.material:material-icons-extended")
+
     implementation(libs.androidx.compose.ui)
 
     implementation(libs.androidx.compose.ui.graphics)

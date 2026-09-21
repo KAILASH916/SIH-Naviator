@@ -121,4 +121,36 @@ class GpsLocationFilterTest {
         assertEquals(GpsAccuracyLevel.VERY_POOR, GpsAccuracyLevel.fromAccuracy(75.0f))
         assertEquals(GpsAccuracyLevel.VERY_POOR, GpsAccuracyLevel.fromAccuracy(0.0f))
     }
+
+    @Test
+    fun testSpeedSpikeRateLimitingOnAccelerationFromZero() {
+        val now = System.currentTimeMillis()
+        // First fix at stationary (0 m/s)
+        filter.processLocation(
+            rawLat = 11.0168,
+            rawLon = 76.9558,
+            accuracy = 5.0f,
+            locationTimeMs = now,
+            speedMps = 0.0f,
+            hasSpeed = true,
+            hasAccuracy = true,
+            currentTimeMs = now
+        )
+
+        // Second fix has a sudden position jump / speed spike of 10 m/s (36 km/h) in 1 second
+        val result = filter.processLocation(
+            rawLat = 11.0169,
+            rawLon = 76.9559,
+            accuracy = 5.0f,
+            locationTimeMs = now + 1000,
+            speedMps = 10.0f,
+            hasSpeed = true,
+            hasAccuracy = true,
+            currentTimeMs = now + 1000
+        )
+
+        // Max acceleration delta is 4.0 m/s^2 * 1.0s = 4.0 m/s (14.4 km/h).
+        // Speed should be bounded to 14.4 km/h instead of jumping un-rate-limited to 36 km/h.
+        assertEquals(14.4f, result.speedKmh, 0.1f)
+    }
 }

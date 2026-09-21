@@ -67,6 +67,78 @@ object GpxExporter {
     }
 
     /**
+     * Generates a standard CSV string from a list of trajectory points.
+     */
+    fun generateCsv(points: List<GpxTrackPoint>): String {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+        val sb = StringBuilder()
+        sb.append("timestamp,latitude,longitude,altitude_m,speed_kmh,heading_deg,is_blackout\n")
+
+        for (pt in points) {
+            sb.append(
+                String.format(
+                    Locale.US,
+                    "%s,%.7f,%.7f,%.2f,%.2f,%.1f,%b\n",
+                    dateFormat.format(Date(pt.timestampMs)),
+                    pt.lat,
+                    pt.lon,
+                    pt.altMeters,
+                    pt.speedKmh,
+                    pt.headingDeg,
+                    pt.isBlackout
+                )
+            )
+        }
+
+        return sb.toString()
+    }
+
+    /**
+     * Generates a JSON string from a list of trajectory points.
+     */
+    fun generateJson(points: List<GpxTrackPoint>, trackName: String = "Naviator Trajectory"): String {
+        val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+        val sb = StringBuilder()
+        sb.append("{\n")
+        sb.append("  \"trackName\": \"").append(escapeJson(trackName)).append("\",\n")
+        sb.append("  \"pointCount\": ").append(points.size).append(",\n")
+        sb.append("  \"points\": [\n")
+
+        points.forEachIndexed { index, pt ->
+            sb.append("    {\n")
+            sb.append("      \"timestamp\": \"").append(dateFormat.format(Date(pt.timestampMs))).append("\",\n")
+            sb.append(String.format(Locale.US, "      \"latitude\": %.7f,\n", pt.lat))
+            sb.append(String.format(Locale.US, "      \"longitude\": %.7f,\n", pt.lon))
+            sb.append(String.format(Locale.US, "      \"altitudeMeters\": %.2f,\n", pt.altMeters))
+            sb.append(String.format(Locale.US, "      \"speedKmh\": %.2f,\n", pt.speedKmh))
+            sb.append(String.format(Locale.US, "      \"headingDeg\": %.1f,\n", pt.headingDeg))
+            sb.append("      \"isBlackout\": ").append(pt.isBlackout).append("\n")
+            sb.append("    }").append(if (index < points.size - 1) "," else "").append("\n")
+        }
+
+        sb.append("  ]\n")
+        sb.append("}\n")
+
+        return sb.toString()
+    }
+
+    private fun escapeJson(text: String): String {
+        return text.replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\b", "\\b")
+            .replace("\u000C", "\\f")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }
+
+    /**
      * Saves GPX XML string to internal files directory under "gpx_tracks".
      */
     fun saveGpxToFile(context: Context, gpxXml: String, fileName: String? = null): File? {
@@ -86,9 +158,9 @@ object GpxExporter {
     }
 
     /**
-     * Creates an Android Intent chooser to share/export the GPX file.
+     * Creates an Android Intent chooser to share/export a track file with appropriate MIME type.
      */
-    fun shareGpxFile(context: Context, file: File) {
+    fun shareGpxFile(context: Context, file: File, mimeType: String = "application/gpx+xml") {
         try {
             val contentUri: Uri = FileProvider.getUriForFile(
                 context,
@@ -96,16 +168,16 @@ object GpxExporter {
                 file
             )
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                type = "application/gpx+xml"
+                type = mimeType
                 putExtra(Intent.EXTRA_STREAM, contentUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            val chooser = Intent.createChooser(shareIntent, "Export Naviator GPX Track").apply {
+            val chooser = Intent.createChooser(shareIntent, "Export Naviator Track File").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(chooser)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to share GPX file: ${e.message}", e)
+            Log.e(TAG, "Failed to share track file: ${e.message}", e)
         }
     }
 

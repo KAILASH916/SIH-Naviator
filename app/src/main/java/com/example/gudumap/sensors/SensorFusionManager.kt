@@ -27,11 +27,15 @@ enum class HeadingConfidence {
     HIGH, MEDIUM, LOW, UNRELIABLE
 }
 
-class SensorFusionManager {
+class SensorFusionManager(
+    val phoneMountCalibrator: PhoneMountCalibrator = PhoneMountCalibrator(),
+    val headingFusionEngine: HeadingFusionEngine = HeadingFusionEngine()
+) {
 
     private val linearAccelerometer = FloatArray(3)
     private val magnetometer = FloatArray(3)
     private val gyroscope = FloatArray(3)
+
 
     // Current 3x3 rotation matrix from device to world (X=East, Y=North, Z=Up)
     private val rotationMatrix = FloatArray(9) { if (it % 4 == 0) 1f else 0f }
@@ -324,15 +328,19 @@ class SensorFusionManager {
     }
 
     fun getOrientation(): OrientationData {
-        var heading = Math.toDegrees(fusedAzimuth.toDouble()).toFloat()
-        if (heading < 0f) heading += 360f
+        var rawHeading = Math.toDegrees(fusedAzimuth.toDouble()).toFloat()
+        if (rawHeading < 0f) rawHeading += 360f
+
+        headingFusionEngine.updateSensorOrientation(rawHeading, headingConfidence)
+        val finalHeading = headingFusionEngine.currentHeadingDeg
 
         return OrientationData(
-            heading = heading,
+            heading = finalHeading,
             pitch = Math.toDegrees(fusedPitch.toDouble()).toFloat(),
             roll = Math.toDegrees(fusedRoll.toDouble()).toFloat()
         )
     }
+
 
     fun getRotationMatrix(): FloatArray {
         return rotationMatrix.clone()

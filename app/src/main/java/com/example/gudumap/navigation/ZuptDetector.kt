@@ -6,7 +6,8 @@ import kotlin.math.sqrt
 enum class NavMotionState {
     STATIONARY,
     ROTATING_IN_PLACE,
-    MOVING
+    MOVING,
+    UNCERTAIN
 }
 
 /**
@@ -21,6 +22,7 @@ enum class NavMotionState {
  * Identifies:
  * - STATIONARY: Phone lying completely still on table or resting still in hand.
  * - ROTATING_IN_PLACE: Phone tilted, turned, or handled in place (gyro active, but no horizontal translation).
+ * - UNCERTAIN: Transient state during initial motion transition or small vibration.
  * - MOVING: Genuine pedestrian walking or vehicular locomotion.
  *
  * Modular: Can be enabled/disabled dynamically.
@@ -47,7 +49,11 @@ class ZuptDetector(
 
     private var consecutiveStationaryCount = 0
     private var consecutiveRotatingCount = 0
+    private var consecutiveMovingCount = 0
     private var isStationaryState = false
+
+    var stationaryConfidence: String = "HIGH"
+        private set
 
     var estimatedGyroBiasX: Float = 0f
         private set
@@ -63,6 +69,7 @@ class ZuptDetector(
 
     var motionState: NavMotionState = NavMotionState.STATIONARY
         private set
+
 
     /**
      * Feed an incoming IMU sample and optional GNSS speed to update stationary state.
@@ -116,6 +123,7 @@ class ZuptDetector(
         if (instantStationary) {
             consecutiveStationaryCount++
             consecutiveRotatingCount = 0
+            consecutiveMovingCount = 0
 
             // Online Gyroscope Bias Calibration during stationary periods
             gyroBiasAccumX += sample.gx
@@ -131,23 +139,43 @@ class ZuptDetector(
             if (consecutiveStationaryCount >= minConsecutiveSamples) {
                 motionState = NavMotionState.STATIONARY
                 isStationaryState = true
+                stationaryConfidence = if (accMagDev < 0.15f && gyroMag < 0.05f && consecutiveStationaryCount >= 6) {
+                    "HIGH"
+                } else {
+                    "MEDIUM"
+                }
+            } else {
+                motionState = NavMotionState.UNCERTAIN
+                stationaryConfidence = "LOW"
             }
         } else if (instantRotatingInPlace) {
             consecutiveRotatingCount++
             consecutiveStationaryCount = 0
+            consecutiveMovingCount = 0
             if (consecutiveRotatingCount >= 2) {
                 motionState = NavMotionState.ROTATING_IN_PLACE
                 isStationaryState = false
+                stationaryConfidence = "LOW"
             }
         } else {
+            consecutiveMovingCount++
             consecutiveStationaryCount = 0
             consecutiveRotatingCount = 0
-            motionState = NavMotionState.MOVING
-            isStationaryState = false
+
+            if (isStationaryState && consecutiveMovingCount < 3) {
+                // Hysteresis: small transient vibration or single sample pulse does not immediately drop stationary state
+                motionState = NavMotionState.UNCERTAIN
+                stationaryConfidence = "LOW"
+            } else {
+                motionState = NavMotionState.MOVING
+                isStationaryState = false
+                stationaryConfidence = "LOW"
+            }
         }
 
         return isStationaryState
     }
+
 
     private fun calculateVariance(history: FloatArray, count: Int): Float {
         if (count < 2) return 0f

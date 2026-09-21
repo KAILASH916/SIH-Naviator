@@ -46,6 +46,37 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Explore
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.Navigation
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Warning
+
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -59,6 +90,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -125,8 +157,22 @@ fun NavigationScreen(
     var showOnboarding by remember {
         mutableStateOf(!preferences.getBoolean("onboarding_seen", false))
     }
-    var currentScreen by remember { mutableStateOf("MAP") } // "MAP" or "SYSTEM_ARCHITECTURE"
     var sosState by remember { mutableStateOf(com.example.gudumap.sos.SosState.IDLE) }
+    val sosViewModel: com.example.gudumap.sos.SosViewModel = viewModel()
+    val sosStatus by sosViewModel.sosStatus.collectAsState()
+    val activeSosPacket by sosViewModel.activeSosPacket.collectAsState()
+    val acknowledgedReceivers by sosViewModel.acknowledgedReceivers.collectAsState()
+    val selectedReceivedSos by sosViewModel.selectedReceivedSos.collectAsState()
+    val receivedSosList by sosViewModel.receivedSosList.collectAsState()
+
+    var showSosConfirmationDialog by remember { mutableStateOf(false) }
+    var showSosCountdownDialog by remember { mutableStateOf(false) }
+    var showSosBluetoothDisabledDialog by remember { mutableStateOf(false) }
+    var showSosCancelConfirmationDialog by remember { mutableStateOf(false) }
+    var showActiveSosDialog by remember { mutableStateOf(false) }
+
+    var isTechnicalDetailsExpanded by rememberSaveable { mutableStateOf(false) }
+    var isCoverageDetailsExpanded by rememberSaveable { mutableStateOf(false) }
 
     var permissionGranted by remember {
         mutableStateOf(
@@ -144,6 +190,12 @@ fun NavigationScreen(
         if (granted) {
             navViewModel.retryLocationUpdatesIfNeeded()
         }
+    }
+
+    val blePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        sosViewModel.retryScanning()
     }
 
     if (showOnboarding) {
@@ -166,6 +218,18 @@ fun NavigationScreen(
                         preferences.edit().putBoolean("onboarding_seen", true).apply()
                         if (!permissionGranted) {
                             permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        }
+                        val perms = mutableListOf<String>()
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+                            perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                        if (perms.isNotEmpty()) {
+                            blePermissionLauncher.launch(perms.toTypedArray())
                         }
                     }
                 ) {
@@ -197,6 +261,7 @@ fun NavigationScreen(
                         Manifest.permission.ACCESS_FINE_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED
                     latestViewModel.retryLocationUpdatesIfNeeded()
+                    sosViewModel.retryScanning()
                 }
                 Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> {
                     latestViewModel.pauseNavigation()
@@ -247,9 +312,9 @@ fun NavigationScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .verticalScroll(rememberScrollState())
-                        .padding(start = 16.dp, end = 16.dp, bottom = 20.dp, top = 36.dp)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 20.dp, top = 28.dp)
                 ) {
-                    // SIDEBAR HEADER
+                    // 1. SIDEBAR HEADER
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -257,13 +322,16 @@ fun NavigationScreen(
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 color = Color(0xFF2563EB)
                             ) {
-                                Text(
-                                    text = "🧭",
-                                    fontSize = 18.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                Icon(
+                                    imageVector = Icons.Default.Navigation,
+                                    contentDescription = "NAVIATOR App Icon",
+                                    modifier = Modifier
+                                        .padding(7.dp)
+                                        .size(18.dp),
+                                    tint = Color.White
                                 )
                             }
                             Spacer(modifier = Modifier.width(10.dp))
@@ -271,28 +339,28 @@ fun NavigationScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         text = "NAVIATOR",
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.Black,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
                                         color = textColorPrimary,
-                                        letterSpacing = 1.sp
+                                        letterSpacing = 0.5.sp
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = Color(0xFFECFDF5)
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (isDarkMode) Color(0xFF064E3B) else Color(0xFFECFDF5)
                                     ) {
                                         Text(
                                             text = "v2.4",
                                             fontSize = 9.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = Color(0xFF047857),
-                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF059669),
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                                         )
                                     }
                                 }
                                 Text(
                                     text = "On-Device AI Navigation Engine",
-                                    fontSize = 11.sp,
+                                    fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = textColorSecondary
                                 )
@@ -300,68 +368,36 @@ fun NavigationScreen(
                         }
                         IconButton(
                             onClick = { scope.launch { drawerState.close() } },
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Text("×", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = textColorPrimary)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider(color = dividerColor)
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // EMERGENCY SOS BUTTON IN SIDEBAR
-                    Button(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFDC2626)
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        onClick = {
-                            scope.launch { drawerState.close() }
-                            if (!com.example.gudumap.sos.SosConfig.hasValidContacts()) {
-                                sosState = com.example.gudumap.sos.SosState.NO_CONTACTS
-                            } else {
-                                sosState = com.example.gudumap.sos.SosState.CONFIRMATION
-                            }
-                        }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = "🆘 EMERGENCY SOS",
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.sp,
-                                color = Color.White
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close Drawer",
+                                modifier = Modifier.size(20.dp),
+                                tint = textColorSecondary
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider(color = dividerColor)
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
+                    HorizontalDivider(color = dividerColor, thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // SECTION 1: NAVIGATION & DEMO CONTROLS
+                    // 1. SECTION: NAVIGATION
                     Text(
-                        text = "NAVIGATION & DEMO",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF2563EB),
-                        letterSpacing = 0.8.sp
+                        text = "Navigation",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColorSecondary
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
-                    // TOGGLE SWITCH 1: DEMO MODE (OFFLINE GPS)
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
                             containerColor = if (navState.blackoutMode) (if (isDarkMode) Color(0xFF3F1212) else Color(0xFFFEF2F2)) else drawerCardBg
                         ),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (navState.blackoutMode) Color(0xFFEF4444) else cardBorderColor
@@ -370,22 +406,22 @@ fun NavigationScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Kinematic Demo Controls",
-                                    fontSize = 13.sp,
+                                    text = "Blackout Mode",
+                                    fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = textColorPrimary
                                 )
                                 Text(
                                     text = if (navState.isDemoModeEnabled) {
-                                        if (navViewModel.isKinematicDemoActive) "🚨 Demo Movement Active" else "🎮 Controls Panel Visible"
+                                        if (navViewModel.isKinematicDemoActive) "Demo Movement Active" else "Controls Panel Visible"
                                     } else {
-                                        "📡 Live GNSS Navigation Active"
+                                        "Live GNSS Navigation Active"
                                     },
                                     fontSize = 10.sp,
                                     color = if (navState.isDemoModeEnabled) Color(0xFFEF4444) else textColorSecondary
@@ -403,42 +439,144 @@ fun NavigationScreen(
                             )
                         }
                     }
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    // SECTION 2: HUD & DISPLAY THEME
+                    // 2. SECTION: TOOLS & EMERGENCY
                     Text(
-                        text = "HUD & DISPLAY THEME",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF2563EB),
-                        letterSpacing = 0.8.sp
+                        text = "Tools & Emergency",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColorSecondary
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
-                    // TOGGLE SWITCH: THEME (LIGHT / DARK)
+                    val isSosActiveInDrawer = activeSosPacket != null || sosStatus == com.example.gudumap.sos.SosStatus.BROADCASTING || sosStatus == com.example.gudumap.sos.SosStatus.ACKNOWLEDGED
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                scope.launch { drawerState.close() }
+                                if (isSosActiveInDrawer) {
+                                    showActiveSosDialog = true
+                                } else {
+                                    if (!sosViewModel.isBluetoothEnabled()) {
+                                        showSosBluetoothDisabledDialog = true
+                                    } else {
+                                        val perms = mutableListOf<String>()
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                                            if (!sosViewModel.hasScanPermission()) perms.add(Manifest.permission.BLUETOOTH_SCAN)
+                                            if (!sosViewModel.hasAdvertisePermission()) perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
+                                            if (!sosViewModel.hasConnectPermission()) perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                                        }
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                            val hasNotif = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                                            if (!hasNotif) perms.add(Manifest.permission.POST_NOTIFICATIONS)
+                                        }
+                                        if (perms.isNotEmpty()) {
+                                            blePermissionLauncher.launch(perms.toTypedArray())
+                                        }
+                                        showSosConfirmationDialog = true
+                                    }
+                                }
+                            },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isSosActiveInDrawer) (if (isDarkMode) Color(0xFF3F1212) else Color(0xFFFEF2F2)) else drawerCardBg
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (isSosActiveInDrawer) Color(0xFFDC2626) else cardBorderColor
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSosActiveInDrawer) Color(0xFFDC2626) else (if (isDarkMode) Color(0xFF451A1A) else Color(0xFFFEF2F2))
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = "Emergency SOS Icon",
+                                        modifier = Modifier
+                                            .padding(6.dp)
+                                            .size(18.dp),
+                                        tint = if (isSosActiveInDrawer) Color.White else Color(0xFFDC2626)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = if (isSosActiveInDrawer) "Emergency SOS — Active" else "Emergency SOS",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSosActiveInDrawer) Color(0xFFDC2626) else textColorPrimary
+                                        )
+                                        if (isSosActiveInDrawer) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .background(Color(0xFFDC2626), CircleShape)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = if (isSosActiveInDrawer) {
+                                            if (acknowledgedReceivers.isNotEmpty()) "Acknowledged by ${acknowledgedReceivers.size} nearby user(s)" else "Broadcasting alert... Tap to view"
+                                        } else {
+                                            "Broadcast BLE alert to nearby app users"
+                                        },
+                                        fontSize = 10.sp,
+                                        color = if (isSosActiveInDrawer) Color(0xFFDC2626) else textColorSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // 3. SECTION: APPEARANCE
+                    Text(
+                        text = "Appearance",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColorSecondary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = drawerCardBg),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, cardBorderColor)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = if (isDarkMode) "🌙 Dark Theme" else "☀️ Light Theme",
-                                    fontSize = 13.sp,
+                                    text = "Dark Appearance",
+                                    fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = textColorPrimary
                                 )
                                 Text(
-                                    text = if (isDarkMode) "Dark Slate Colors Active" else "High-Contrast Light Active",
+                                    text = "Use dark appearance",
                                     fontSize = 10.sp,
                                     color = textColorSecondary
                                 )
@@ -455,128 +593,155 @@ fun NavigationScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(18.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
 
-                    // SECTION 3: OFFLINE MAP COVERAGE
+                    // 4. SECTION: OFFLINE MAPS
                     Text(
-                        text = "MAP & COVERAGE",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF2563EB),
-                        letterSpacing = 0.8.sp
+                        text = "Offline Maps",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = textColorSecondary
                     )
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
-                    // OFFLINE MAP COVERAGE INFORMATION PANEL
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = drawerCardBg),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         border = androidx.compose.foundation.BorderStroke(1.dp, cardBorderColor)
                     ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("🗺️", fontSize = 14.sp)
-                                Spacer(modifier = Modifier.width(6.dp))
+                        Column(
+                            modifier = Modifier
+                                .padding(12.dp)
+                                .animateContentSize()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.Map,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = Color(0xFF2563EB)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Coimbatore",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textColorPrimary
+                                    )
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (navState.offlineMapStatus == "AVAILABLE") (if (isDarkMode) Color(0xFF064E3B) else Color(0xFFECFDF5)) else (if (isDarkMode) Color(0xFF450A0A) else Color(0xFFFEF2F2))
+                                ) {
+                                    Text(
+                                        text = if (navState.offlineMapStatus == "AVAILABLE") "Available" else "Unavailable",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (navState.offlineMapStatus == "AVAILABLE") Color(0xFF059669) else Color(0xFFDC2626),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Zoom 11 – 16  •  34 MB",
+                                fontSize = 10.5.sp,
+                                color = textColorSecondary
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            // EXPANDABLE COVERAGE DETAILS ROW
+                            val chevronRotation by animateFloatAsState(
+                                targetValue = if (isCoverageDetailsExpanded) 180f else 0f,
+                                label = "coverageChevronRotation"
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel = if (isCoverageDetailsExpanded) "Hide coverage details" else "Show coverage details"
+                                    ) {
+                                        isCoverageDetailsExpanded = !isCoverageDetailsExpanded
+                                    }
+                                    .padding(vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
                                 Text(
-                                    text = "Offline Map Coverage",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textColorPrimary
+                                    text = if (isCoverageDetailsExpanded) "Hide details" else "Coverage details",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF2563EB)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .graphicsLayer { rotationZ = chevronRotation },
+                                    tint = Color(0xFF2563EB)
                                 )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Region: Coimbatore Metropolitan Area",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = textColorPrimary
-                            )
-                            Text(
-                                text = "Zoom levels: 11 – 16  •  915 Tiles (~34 MB)",
-                                fontSize = 10.5.sp,
-                                color = textColorSecondary
-                            )
-                            Text(
-                                text = "Bounds: 10.915° N – 11.125° N, 76.880° E – 77.070° E",
-                                fontSize = 10.sp,
-                                color = textColorSecondary
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = if (navState.offlineMapStatus == "AVAILABLE") "Status: Available (Bundled MBTiles)" else "Status: Unavailable",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (navState.offlineMapStatus == "AVAILABLE") Color(0xFF047857) else Color(0xFFB91C1C)
-                            )
+
+                            if (isCoverageDetailsExpanded) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = dividerColor.copy(alpha = 0.5f), thickness = 0.5.dp)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "915 Tiles (Bundled MBTiles)",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = textColorPrimary
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Bounds: 10.915°N–11.125°N, 76.880°E–77.070°E",
+                                    fontSize = 9.5.sp,
+                                    color = textColorSecondary
+                                )
+                            }
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(14.dp))
 
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    // SECTION 3: SYSTEM ARCHITECTURE
-                    Text(
-                        text = "DIAGNOSTICS & SYSTEM",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF2563EB),
-                        letterSpacing = 0.8.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // SYSTEM ARCHITECTURE PAGE NAVIGATION BUTTON
-                    Button(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(46.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                        shape = RoundedCornerShape(12.dp),
-                        onClick = {
-                            currentScreen = "SYSTEM_ARCHITECTURE"
-                            scope.launch { drawerState.close() }
-                        }
-                    ) {
-                        Text(
-                            text = "⚙️ SYSTEM ARCHITECTURE",
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 12.sp,
-                            color = Color.White
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    // APP CREDITS & VERSION FOOTER
+                    // 5. APP CREDITS & VERSION FOOTER
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = drawerCardBg,
                         border = androidx.compose.foundation.BorderStroke(1.dp, cardBorderColor)
                     ) {
                         Column(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Text(
                                 text = "SIH 2026 • PS SIH26168",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Black,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
                                 color = Color(0xFF2563EB),
-                                letterSpacing = 0.5.sp
+                                letterSpacing = 0.3.sp
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(3.dp))
                             Text(
                                 text = "ISRO IO-VNBD Model • On-Device AI",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.SemiBold,
                                 color = textColorPrimary
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = "Dead Reckoning GNSS Blackout System",
-                                fontSize = 9.5.sp,
+                                fontSize = 9.sp,
                                 color = textColorSecondary
                             )
                         }
@@ -586,78 +751,64 @@ fun NavigationScreen(
             }
         }
     ) {
-        when {
-            currentScreen == "SYSTEM_ARCHITECTURE" -> {
-                SystemArchitecturePage(
-                    navState = navState,
+        if (isMapExpanded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0F172A))
+            ) {
+                MapView(
+                    latitude = navState.latitude,
+                    longitude = navState.longitude,
+                    headingDeg = navState.headingDeg,
+                    deviceHeadingDeg = navState.deviceHeadingDeg,
+                    mapStatus = navState.mapStatus,
+                    offlineMapStatus = navState.offlineMapStatus,
+                    roadName = navState.currentRoadName,
+                    blackoutMode = navState.blackoutMode,
+                    naiveLatitude = navState.naiveLatitude,
+                    naiveLongitude = navState.naiveLongitude,
+                    uncertaintyRadiusMeters = navState.uncertaintyRadiusMeters,
+                    locationAccuracyMeters = navState.locationAccuracyMeters,
+                    locationProvider = navState.locationProvider,
+                    demoTrailPoints = navState.demoTrailPoints,
+                    demoTrailSegments = navState.demoTrailSegments,
+                    gpsTrailPoints = navState.gpsTrailPoints,
+                    predictionTrailPoints = navState.predictionTrailPoints,
+                    predictionTrailSegments = navState.predictionTrailSegments,
+                    visualMode = navState.visualMode,
+                    lastTrustedGpsAccuracyMeters = navState.lastTrustedGpsAccuracyMeters,
+                    lastTrustedGpsTimestampNs = navState.lastTrustedGpsTimestampNs,
+                    lastKnownLocationAgeSeconds = navState.lastKnownLocationAgeSeconds,
+                    historicalLkMarkers = navState.historicalLkMarkers,
+                    lastPredictedLat = navState.lastPredictedLat,
+                    lastPredictedLon = navState.lastPredictedLon,
+                    predictionUncertaintyMeters = navState.predictionUncertaintyMeters,
+                    hasGpsFix = navState.hasGpsFix,
+                    gpsState = navState.gpsState,
+                    isDemoModeEnabled = navState.isDemoModeEnabled,
+                    isKinematicDemoActive = navViewModel.isKinematicDemoActive,
+                    isExpanded = true,
                     isDarkMode = isDarkMode,
-                    onBackToMap = { currentScreen = "MAP" },
-                    onOpenDrawer = { scope.launch { drawerState.open() } }
+                    onToggleExpand = { isMapExpanded = false },
+                    onMinimizeMap = { isMapExpanded = false },
+                    modifier = Modifier.fillMaxSize()
                 )
-            }
-            isMapExpanded -> {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(screenBgColor)
-                ) {
-                    MapView(
-                        latitude = navState.latitude,
-                        longitude = navState.longitude,
-                        headingDeg = navState.headingDeg,
-                        deviceHeadingDeg = navState.deviceHeadingDeg,
-                        mapStatus = navState.mapStatus,
-                        offlineMapStatus = navState.offlineMapStatus,
-                        roadName = navState.currentRoadName,
-                        blackoutMode = navState.blackoutMode,
-                        naiveLatitude = navState.naiveLatitude,
-                        naiveLongitude = navState.naiveLongitude,
-                        uncertaintyRadiusMeters = navState.uncertaintyRadiusMeters,
-                        locationAccuracyMeters = navState.locationAccuracyMeters,
-                        locationProvider = navState.locationProvider,
-                        demoTrailPoints = navState.demoTrailPoints,
-                        demoTrailSegments = navState.demoTrailSegments,
-                        gpsTrailPoints = navState.gpsTrailPoints,
-                        predictionTrailPoints = navState.predictionTrailPoints,
-                        predictionTrailSegments = navState.predictionTrailSegments,
-                        visualMode = navState.visualMode,
-                        mapOrientationMode = navState.mapOrientationMode,
-                        lastTrustedGpsLat = navState.lastTrustedGpsLat,
-                        lastTrustedGpsLon = navState.lastTrustedGpsLon,
-                        lastTrustedGpsAccuracyMeters = navState.lastTrustedGpsAccuracyMeters,
-                        lastTrustedGpsTimestampNs = navState.lastTrustedGpsTimestampNs,
-                        lastKnownLocationAgeSeconds = navState.lastKnownLocationAgeSeconds,
-                        historicalLkMarkers = navState.historicalLkMarkers,
-                        lastPredictedLat = navState.lastPredictedLat,
-                        lastPredictedLon = navState.lastPredictedLon,
-                        predictionUncertaintyMeters = navState.predictionUncertaintyMeters,
-                        hasGpsFix = navState.hasGpsFix,
-                        gpsState = navState.gpsState,
-                        isDemoModeEnabled = navState.isDemoModeEnabled,
-                        isKinematicDemoActive = navViewModel.isKinematicDemoActive,
-                        isExpanded = true,
-                        isDarkMode = isDarkMode,
-                        onToggleExpand = { isMapExpanded = false },
-                        onMinimizeMap = { isMapExpanded = false },
-                        onToggleMapOrientation = { navViewModel.toggleMapOrientationMode() },
-                        modifier = Modifier.fillMaxSize()
-                    )
 
-                    IconButton(
-                        onClick = { scope.launch { drawerState.open() } },
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(top = 44.dp, start = 12.dp)
-                            .size(42.dp)
-                            .background(if (isDarkMode) Color(0xEE1E293B) else Color(0xEEFFFFFF), CircleShape)
-                            .border(1.dp, if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0), CircleShape)
-                    ) {
-                        Text("≡", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = textColorPrimary)
-                    }
+                IconButton(
+                    onClick = { scope.launch { drawerState.open() } },
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 44.dp, start = 12.dp)
+                        .size(42.dp)
+                        .background(if (isDarkMode) Color(0xEE1E293B) else Color(0xEEFFFFFF), CircleShape)
+                        .border(1.dp, if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0), CircleShape)
+                ) {
+                    Text("≡", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = textColorPrimary)
                 }
             }
-            else -> {
-                Column(
+        } else {
+            Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(screenBgColor)
@@ -729,12 +880,8 @@ fun NavigationScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                val mapSourceLabel = when {
-                                    navState.offlineMapStatus == "AVAILABLE" -> "OFFLINE MAP"
-                                    navState.isInternetAvailable -> "ONLINE MAP"
-                                    else -> "MAP UNAVAILABLE"
-                                }
-                                val mapSourceIsAvailable = navState.offlineMapStatus == "AVAILABLE" || navState.isInternetAvailable
+                                val mapSourceLabel = if (navState.offlineMapStatus == "AVAILABLE") "OFFLINE MAP" else "MAP UNAVAILABLE"
+                                val mapSourceIsAvailable = navState.offlineMapStatus == "AVAILABLE"
 
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
@@ -789,18 +936,18 @@ fun NavigationScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 val (locationLabel, labelColor) = when {
-                                    navState.isDemoModeEnabled && navViewModel.isKinematicDemoActive -> "🎮 DEMO RUNNING" to Color(0xFF047857)
-                                    navState.isDemoModeEnabled -> "🎮 DEMO MODE" to Color(0xFF2563EB)
-                                    navState.blackoutMode -> "PREDICTED LOCATION" to Color(0xFFB91C1C)
+                                    navState.isDemoModeEnabled && navViewModel.isKinematicDemoActive -> "Demo Movement Active" to Color(0xFF047857)
+                                    navState.isDemoModeEnabled -> "Demo Controls" to Color(0xFF2563EB)
+                                    navState.blackoutMode -> "Predicted Location" to Color(0xFFB91C1C)
                                     else -> when (navState.gpsState) {
-                                        GpsState.FIXED -> "📡 GPS FIXED" to Color(0xFF047857)
-                                        GpsState.WEAK -> "📡 GPS WEAK" to Color(0xFFB45309)
-                                        GpsState.STALE -> "📡 GPS STALE" to Color(0xFFB45309)
-                                        GpsState.ACQUIRING -> "📡 ACQUIRING FIX" to Color(0xFFB45309)
-                                        GpsState.SEARCHING -> "📡 GPS SEARCHING" to Color(0xFFB45309)
-                                        GpsState.GPS_DISABLED -> "📡 LOCATION OFF" to Color(0xFFB91C1C)
-                                        GpsState.PERMISSION_REQUIRED -> "📡 PERMISSION REQUIRED" to Color(0xFFB91C1C)
-                                        GpsState.LOST -> "📡 GPS LOST" to Color(0xFFB91C1C)
+                                        GpsState.FIXED -> "GPS Fixed" to Color(0xFF047857)
+                                        GpsState.WEAK -> "GPS Weak" to Color(0xFFB45309)
+                                        GpsState.STALE -> "GPS Weak" to Color(0xFFB45309)
+                                        GpsState.ACQUIRING -> "Searching for GPS" to Color(0xFFB45309)
+                                        GpsState.SEARCHING -> "Searching for GPS" to Color(0xFFB45309)
+                                        GpsState.GPS_DISABLED -> "Location Off" to Color(0xFFB91C1C)
+                                        GpsState.PERMISSION_REQUIRED -> "Permission Required" to Color(0xFFB91C1C)
+                                        GpsState.LOST -> "GNSS Blackout Active" to Color(0xFFB91C1C)
                                     }
                                 }
                                 Text(
@@ -873,13 +1020,18 @@ fun NavigationScreen(
                                     modifier = Modifier.weight(1f),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(if (navState.isSimulatedBlackout) "🎬" else "🚨", fontSize = 18.sp)
+                                    Icon(
+                                        imageVector = Icons.Default.Warning,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp),
+                                        tint = Color(0xFFDC2626)
+                                    )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = if (navState.isSimulatedBlackout) "SIMULATED GNSS BLACKOUT" else "GNSS BLACKOUT ACTIVE",
+                                            text = if (navState.isSimulatedBlackout) "Simulated GNSS Blackout" else "GNSS Blackout Active",
                                             fontSize = 12.5.sp,
-                                            fontWeight = FontWeight.Black,
+                                            fontWeight = FontWeight.Bold,
                                             color = Color(0xFFDC2626)
                                         )
                                         Text(
@@ -897,7 +1049,7 @@ fun NavigationScreen(
                                     color = Color(0xFFDC2626)
                                 ) {
                                     Text(
-                                        text = if (navState.motionMode == "VEHICLE_MODE") "🚗 VEHICLE" else "🚶 PEDESTRIAN",
+                                        text = if (navState.motionMode == "VEHICLE_MODE") "Vehicle" else "Pedestrian",
                                         fontSize = 9.5.sp,
                                         fontWeight = FontWeight.ExtraBold,
                                         color = Color.White,
@@ -926,7 +1078,12 @@ fun NavigationScreen(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("📡", fontSize = 16.sp)
+                                Icon(
+                                    imageVector = Icons.Default.GpsFixed,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = if (isDarkMode) Color(0xFFFDE68A) else Color(0xFF92400E)
+                                )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = "Waiting for GPS starting location. Turn on Location to anchor Demo Mode.",
@@ -968,7 +1125,7 @@ fun NavigationScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .border(1.dp, cardBorderColor, RoundedCornerShape(20.dp)),
-                        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
                         shape = RoundedCornerShape(20.dp),
                         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
                     ) {
@@ -993,7 +1150,6 @@ fun NavigationScreen(
                                 predictionTrailPoints = navState.predictionTrailPoints,
                                 predictionTrailSegments = navState.predictionTrailSegments,
                                 visualMode = navState.visualMode,
-                                mapOrientationMode = navState.mapOrientationMode,
                                 lastTrustedGpsLat = navState.lastTrustedGpsLat,
                                 lastTrustedGpsLon = navState.lastTrustedGpsLon,
                                 lastTrustedGpsAccuracyMeters = navState.lastTrustedGpsAccuracyMeters,
@@ -1025,7 +1181,6 @@ fun NavigationScreen(
                                         isMapExpanded = true
                                     }
                                 },
-                                onToggleMapOrientation = { navViewModel.toggleMapOrientationMode() },
                                 onMyLocationClick = {
                                     val hasFine = ContextCompat.checkSelfPermission(
                                         context,
@@ -1098,11 +1253,20 @@ fun NavigationScreen(
                             ),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text(
-                                text = if (navState.isRecordingGpx) "STOP REC" else "RECORD TRACK",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = if (navState.isRecordingGpx) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Color.White
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (navState.isRecordingGpx) "Stop Recording" else "Record Track",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                         OutlinedButton(
                             modifier = Modifier
@@ -1121,7 +1285,16 @@ fun NavigationScreen(
                             ),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            Text("📤 SHARE LOCATION", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Share,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Share Location", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
 
@@ -1150,24 +1323,22 @@ fun NavigationScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            val isSoftwareDemo = navState.isDemoModeEnabled && navViewModel.isKinematicDemoActive
-                            val isPhysicalDemo = navState.isDemoModeEnabled && !navViewModel.isKinematicDemoActive
+                            val isDemoRunning = navState.isDemoModeEnabled && navViewModel.isKinematicDemoActive
 
                             val speedLabel = when {
-                                isSoftwareDemo -> "Speed (Simulated)"
-                                isPhysicalDemo || navState.blackoutMode -> "Speed (Estimated)"
+                                isDemoRunning -> "Speed (Simulated)"
+                                navState.blackoutMode -> "Speed (Estimated)"
                                 else -> "Speed"
                             }
                             val speedValue = when {
-                                isSoftwareDemo -> String.format(Locale.US, "%.1f km/h", navState.selectedDemoSpeed)
-                                isPhysicalDemo || navState.blackoutMode -> String.format(Locale.US, "Est. %.1f km/h", navState.speedKmh)
-                                navState.isSpeedAvailable -> String.format(Locale.US, "%.1f km/h", navState.speedKmh)
-                                else -> "Unavailable"
+                                isDemoRunning -> String.format(Locale.US, "%.1f km/h", navState.selectedDemoSpeed)
+                                navState.blackoutMode -> String.format(Locale.US, "Est. %.1f km/h", navState.displayedSpeedKmh)
+                                else -> String.format(Locale.US, "%.1f km/h", navState.displayedSpeedKmh)
                             }
                             val displayHeading = navState.headingDeg
 
                             QuickMetricCard(
-                                icon = "⚡",
+                                icon = Icons.Default.Speed,
                                 label = speedLabel,
                                 value = speedValue,
                                 accentColor = Color(0xFF2563EB),
@@ -1175,7 +1346,7 @@ fun NavigationScreen(
                                 modifier = Modifier.weight(1f)
                             )
                             QuickMetricCard(
-                                icon = "🧭",
+                                icon = Icons.Default.Explore,
                                 label = "Direction",
                                 value = String.format(Locale.US, "%.0f° %s", displayHeading, getCardinalDirection(displayHeading)),
                                 accentColor = Color(0xFF10B981),
@@ -1188,7 +1359,7 @@ fun NavigationScreen(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             QuickMetricCard(
-                                icon = "📏",
+                                icon = Icons.Default.Straighten,
                                 label = if (navState.blackoutMode) "Estimated Distance" else "Distance",
                                 value = formatDistance(navState.distanceMeters),
                                 accentColor = Color(0xFF8B5CF6),
@@ -1196,7 +1367,7 @@ fun NavigationScreen(
                                 modifier = Modifier.weight(1f)
                             )
                             QuickMetricCard(
-                                icon = "🎯",
+                                icon = Icons.Default.GpsFixed,
                                 label = if (navState.blackoutMode) "Estimated Uncertainty" else "Position Accuracy",
                                 value = String.format(Locale.US, "±%.1f m", navState.uncertaintyRadiusMeters),
                                 accentColor = Color(0xFFF59E0B),
@@ -1204,6 +1375,11 @@ fun NavigationScreen(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+                        MotionStatusCard(
+                            navState = navState,
+                            isKinematicDemoActive = navViewModel.isKinematicDemoActive,
+                            isDarkMode = isDarkMode
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -1226,13 +1402,18 @@ fun NavigationScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier.padding(bottom = 12.dp)
                             ) {
-                                Text("📍", fontSize = 16.sp)
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = textColorSecondary
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 val positionTitle = when {
-                                    navState.isDemoModeEnabled -> "🎮 DEMO LOCATION (SIMULATED)"
-                                    navState.blackoutMode -> "PREDICTED LOCATION • ESTIMATED (DR)"
-                                    navState.hasGpsFix -> "REAL-TIME GPS POSITION (LIVE)"
-                                    else -> "NO GPS FIX • SEARCHING"
+                                    navState.isDemoModeEnabled -> "Demo Location"
+                                    navState.blackoutMode -> "Predicted Location"
+                                    navState.hasGpsFix -> "GPS Fixed"
+                                    else -> "Searching for GPS"
                                 }
                                 Text(
                                     text = positionTitle,
@@ -1249,8 +1430,7 @@ fun NavigationScreen(
                                 val chipBg = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFC)
                                 val chipBorder = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
 
-                                val hasValidDisplayPos = (navState.hasGpsFix || navState.blackoutMode || navState.isDemoModeEnabled) &&
-                                    navState.latitude.isFinite() &&
+                                val hasValidDisplayPos = navState.latitude.isFinite() &&
                                     navState.longitude.isFinite() &&
                                     navState.latitude in -90.0..90.0 &&
                                     navState.longitude in -180.0..180.0 &&
@@ -1315,6 +1495,72 @@ fun NavigationScreen(
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // EXPANDABLE TECHNICAL DETAILS CARD
+                    val rotationDegrees by animateFloatAsState(
+                        targetValue = if (isTechnicalDetailsExpanded) 180f else 0f,
+                        label = "chevronRotation"
+                    )
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp))
+                            .semantics {
+                                stateDescription = if (isTechnicalDetailsExpanded) "Expanded" else "Collapsed"
+                            },
+                        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+                        shape = RoundedCornerShape(16.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth().animateContentSize()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel = if (isTechnicalDetailsExpanded) "Collapse technical details" else "Expand technical details"
+                                    ) {
+                                        isTechnicalDetailsExpanded = !isTechnicalDetailsExpanded
+                                    }
+                                    .padding(16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (isTechnicalDetailsExpanded) "Hide Technical Details" else "View Technical Details",
+                                    fontSize = 13.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF2563EB)
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .graphicsLayer { rotationZ = rotationDegrees },
+                                    tint = Color(0xFF2563EB)
+                                )
+                            }
+
+                            if (isTechnicalDetailsExpanded) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    HorizontalDivider(color = cardBorderColor)
+                                    SystemArchitectureStatusCard(navState = navState, isDarkMode = isDarkMode)
+                                    LiveTelemetryCard(navState = navState, isDarkMode = isDarkMode)
+                                    TechnicalEvaluationCard(navState = navState, navViewModel = navViewModel, isDarkMode = isDarkMode)
+                                    SessionManagementCard(navState = navState, navViewModel = navViewModel, isDarkMode = isDarkMode)
+                                }
+                            }
+                        }
+                    }
+
                     if (!permissionGranted) {
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
@@ -1335,7 +1581,6 @@ fun NavigationScreen(
                 }
             }
         }
-    }
 
     when (sosState) {
         com.example.gudumap.sos.SosState.CONFIRMATION -> {
@@ -1350,12 +1595,8 @@ fun NavigationScreen(
                 isDarkMode = isDarkMode,
                 initialSeconds = com.example.gudumap.sos.SosConfig.SOS_COUNTDOWN_SECONDS,
                 onCountdownComplete = {
-                    sosState = com.example.gudumap.sos.SosState.PREPARING
-                    val sosLoc = com.example.gudumap.sos.SosLocationResolver.resolve(navState)
-                    val msg = com.example.gudumap.sos.SosMessageBuilder.buildMessage(sosLoc)
-                    val contacts = com.example.gudumap.sos.SosConfig.getValidContacts()
-                    val opened = com.example.gudumap.sos.SosLauncher.launchSmsComposer(context, contacts, msg)
-                    sosState = if (opened) com.example.gudumap.sos.SosState.COMPOSER_OPENED else com.example.gudumap.sos.SosState.ERROR
+                    sosState = com.example.gudumap.sos.SosState.IDLE
+                    sosViewModel.startSosBroadcast(navState)
                 },
                 onCancel = {
                     sosState = com.example.gudumap.sos.SosState.IDLE
@@ -1370,244 +1611,516 @@ fun NavigationScreen(
         }
         else -> {}
     }
+
+    if (showSosConfirmationDialog) {
+        com.example.gudumap.sos.SosConfirmationDialog(
+            isDarkMode = isDarkMode,
+            onConfirm = {
+                showSosConfirmationDialog = false
+                showSosCountdownDialog = true
+            },
+            onDismiss = { showSosConfirmationDialog = false }
+        )
+    }
+
+    if (showSosCountdownDialog) {
+        com.example.gudumap.sos.SosCountdownDialog(
+            isDarkMode = isDarkMode,
+            onCountdownComplete = {
+                showSosCountdownDialog = false
+                sosViewModel.startSosBroadcast(navState)
+            },
+            onCancel = { showSosCountdownDialog = false }
+        )
+    }
+
+    if (showSosBluetoothDisabledDialog) {
+        com.example.gudumap.sos.SosBluetoothDisabledDialog(
+            isDarkMode = isDarkMode,
+            onDismiss = { showSosBluetoothDisabledDialog = false }
+        )
+    }
+
+    if (showSosCancelConfirmationDialog) {
+        com.example.gudumap.sos.SosCancelConfirmationDialog(
+            isDarkMode = isDarkMode,
+            onConfirmCancel = {
+                showSosCancelConfirmationDialog = false
+                sosViewModel.cancelSos()
+            },
+            onDismiss = { showSosCancelConfirmationDialog = false }
+        )
+    }
+
+    if (showActiveSosDialog) {
+        com.example.gudumap.sos.SosActiveDialog(
+            status = sosStatus,
+            ackCount = acknowledgedReceivers.size,
+            isDarkMode = isDarkMode,
+            onDismiss = { showActiveSosDialog = false },
+            onCancelSosClick = {
+                showActiveSosDialog = false
+                showSosCancelConfirmationDialog = true
+            },
+            onSendSmsClick = {
+                val sosLoc = com.example.gudumap.sos.SosLocationResolver.resolve(navState)
+                val msg = com.example.gudumap.sos.SosMessageBuilder.buildMessage(sosLoc)
+                val contacts = com.example.gudumap.sos.SosConfig.getValidContacts()
+                com.example.gudumap.sos.SosLauncher.launchSmsComposer(context, contacts, msg)
+            }
+        )
+    }
+
+    val currentReceivedItem = selectedReceivedSos ?: receivedSosList.firstOrNull { !it.isDismissed && !it.isAcknowledged }
+    if (currentReceivedItem != null) {
+        com.example.gudumap.ui.screens.ReceivedSosDialog(
+            item = currentReceivedItem,
+            myCurrentLat = navState.latitude,
+            myCurrentLon = navState.longitude,
+            isDarkMode = isDarkMode,
+            onViewOnMap = { lat, lon ->
+                sosViewModel.dismissReceivedSos(currentReceivedItem.packet.sosId)
+            },
+            onAcknowledge = { sosId ->
+                sosViewModel.acknowledgeReceivedSos(sosId)
+            },
+            onDismiss = { sosId ->
+                sosViewModel.dismissReceivedSos(sosId)
+            }
+        )
+    }
 }
 
 @Composable
-private fun SystemArchitecturePage(
+private fun SystemArchitectureStatusCard(
     navState: NavigationState,
-    isDarkMode: Boolean,
-    onBackToMap: () -> Unit,
-    onOpenDrawer: () -> Unit
+    isDarkMode: Boolean
 ) {
-    val screenBgColor = if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF8FAFC)
+    val cardBgColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
+    val cardBorderColor = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
+    val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "SYSTEM ARCHITECTURE STATUS",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF2563EB),
+                letterSpacing = 0.5.sp
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val gnssDisplay = when {
+                navState.isDemoModeEnabled -> "SIMULATION"
+                navState.blackoutMode -> "BLACKOUT"
+                navState.gnssNavigationMode == "GNSS_RECOVERY" -> "RECOVERING"
+                navState.hasGpsFix -> "AVAILABLE"
+                else -> "SEARCHING"
+            }
+            val navDisplay = when {
+                navState.isDemoModeEnabled && navState.blackoutMode -> "SIMULATED DR"
+                navState.isDemoModeEnabled -> "DEMO SIMULATION"
+                navState.blackoutMode -> "DEAD RECKONING"
+                navState.hasGpsFix -> "GNSS"
+                else -> "WAITING FOR GPS"
+            }
+            val gateDisplay = "${navState.latestGateAction} (A:${navState.acceptedCount} C:${navState.clampedCount} R:${navState.rejectedCount})"
+            val mlDisplay = navState.mlStatus.replace("_", " ")
+            val ekfDisplay = navState.ekfStatus.replace("_", " ")
+
+            StatusRow(label = "GNSS Fix", value = gnssDisplay, isGood = gnssDisplay == "AVAILABLE", textColor = textColorPrimary)
+            StatusRow(label = "Nav Provider", value = navDisplay, isGood = navDisplay == "GNSS" || navDisplay == "DEAD RECKONING", textColor = textColorPrimary)
+            StatusRow(label = "Motion Data Source", value = if (navState.isDemoModeEnabled) "DEMO" else "REAL IMU", isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "ZUPT State", value = if (navState.zuptActive) "ACTIVE" else "INACTIVE", isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Position Source", value = navState.positionSource, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Speed Source", value = navState.speedSource, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Heading Source", value = navState.headingSource, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Accuracy Source", value = navState.accuracySource, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "ML Innovation Gate", value = gateDisplay, isGood = navState.latestGateAction == "ACCEPTED", textColor = textColorPrimary)
+            StatusRow(label = "ML Residual Model", value = mlDisplay, isGood = navState.mlStatus == "INFERENCE_RUNNING" || navState.mlStatus == "MODEL_READY", textColor = textColorPrimary)
+            StatusRow(label = "EKF Filter State", value = ekfDisplay, isGood = navState.ekfStatus != "UNINITIALIZED", textColor = textColorPrimary)
+            StatusRow(label = "Offline Tile Archive", value = navState.offlineMapStatus, isGood = navState.offlineMapStatus == "AVAILABLE", textColor = textColorPrimary)
+            StatusRow(label = "Internet Connection", value = if (navState.isInternetAvailable) "CONNECTED" else "OFFLINE", isGood = navState.isInternetAvailable, textColor = textColorPrimary)
+        }
+    }
+}
+
+@Composable
+private fun LiveTelemetryCard(
+    navState: NavigationState,
+    isDarkMode: Boolean
+) {
+    val cardBgColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
+    val cardBorderColor = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
+    val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "LIVE FILTER & LATENCY TELEMETRY",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF2563EB),
+                letterSpacing = 0.5.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            val anyFixAge = navState.lastAnyGnssFixAgeSeconds ?: navState.locationAgeSeconds
+            val trustedFixAge = if (navState.hasGpsFix) "${navState.locationAgeSeconds}s" else "No fix"
+            val rawGnssText = if (navState.rawLatitude != 0.0) String.format(Locale.US, "%.5f, %.5f", navState.rawLatitude, navState.rawLongitude) else "None"
+            val fusedPosText = String.format(Locale.US, "%.5f, %.5f", navState.latitude, navState.longitude)
+            val isMarkerVis = com.example.gudumap.ui.components.isValidMapCoordinate(navState.latitude, navState.longitude)
+
+            Text(text = "• Location Callback: ${if (navState.locationCallbackActive) "ACTIVE" else "INACTIVE"}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "• Any Fix Age: ${anyFixAge}s | Trusted Fix Age: $trustedFixAge", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "• Raw GNSS: $rawGnssText", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "• Fused Position: $fusedPosText", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "• Marker Position: $fusedPosText | Visible: $isMarkerVis", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = String.format(
+                    Locale.US,
+                    "• Speed Telemetry: Raw %.1f | Filtered %.1f | Displayed %.1f km/h",
+                    navState.rawSpeedKmh,
+                    navState.filteredSpeedKmh,
+                    navState.displayedSpeedKmh
+                ),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = textColorPrimary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "• Heading Confidence: ${navState.headingConfidence}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            val uncertaintyText = if (navState.uncertaintyRadiusMeters > 0.0) {
+                String.format(Locale.US, "±%.1f m", navState.uncertaintyRadiusMeters)
+            } else if (navState.hasGpsFix && navState.locationAccuracyMeters > 0f) {
+                String.format(Locale.US, "±%.1f m", navState.locationAccuracyMeters)
+            } else {
+                "Unavailable"
+            }
+            Text(text = "• Position Uncertainty: $uncertaintyText", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            val fixAgeText = when {
+                navState.hasGpsFix -> "${navState.locationAgeSeconds} s"
+                navState.lastKnownLocationAgeSeconds != null -> "Stale (${navState.lastKnownLocationAgeSeconds} s)"
+                else -> "Waiting for fix"
+            }
+            Text(text = "• GPS Fix Age: $fixAgeText", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+            Spacer(modifier = Modifier.height(4.dp))
+            val mlLatencyText = if (navState.mlInferenceLatencyMs > 0) {
+                "${navState.mlInferenceLatencyMs} ms"
+            } else {
+                "Idle"
+            }
+            Text(text = "• ML Inference Latency: $mlLatencyText", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
+        }
+    }
+}
+
+@Composable
+private fun TechnicalEvaluationCard(
+    navState: NavigationState,
+    navViewModel: NavigationViewModel,
+    isDarkMode: Boolean
+) {
+    val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+    val m = navState.blackoutMetrics
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, Color(0xFF2563EB), RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF)),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Assessment,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color(0xFF2563EB)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Technical Evaluation",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2563EB)
+                    )
+                }
+                if (navState.isSimulatedBlackout) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFFDC2626)
+                    ) {
+                        Text(
+                            text = "SIMULATED",
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            val blackoutDurText = if (navState.blackoutDurationSeconds > 0.0) {
+                String.format(Locale.US, "%.1f s", navState.blackoutDurationSeconds)
+            } else {
+                "0.0 s"
+            }
+            val drDistText = if (m.drDistance > 0.0) {
+                String.format(Locale.US, "%.1f m", m.drDistance)
+            } else {
+                "0.0 m"
+            }
+            val maxErrText = if (m.maximumPositionErrorMeters > 0.0) {
+                String.format(Locale.US, "%.1f m", m.maximumPositionErrorMeters)
+            } else {
+                "Waiting for recovery"
+            }
+            val finalErrText = if (navState.positionErrorMeters > 0.0) {
+                String.format(Locale.US, "%.1f m", navState.positionErrorMeters)
+            } else {
+                "Waiting for recovery"
+            }
+            val mlGateText = "A:${m.numberOfAcceptedMLPredictions} C:${m.numberOfClampedMLPredictions} R:${m.numberOfRejectedMLPredictions}"
+            val avgLatencyText = if (m.mlInferenceMs > 0) "${m.mlInferenceMs} ms" else "Idle"
+
+            StatusRow(label = "Blackout Duration", value = blackoutDurText, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "DR Distance Travelled", value = drDistText, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Max Position Error", value = maxErrText, isGood = m.maximumPositionErrorMeters in 0.01..15.0, textColor = textColorPrimary)
+            StatusRow(label = "Final Position Error", value = finalErrText, isGood = navState.positionErrorMeters in 0.01..10.0, textColor = textColorPrimary)
+            StatusRow(label = "ML Gate Decisions", value = mlGateText, isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Avg ML Latency", value = avgLatencyText, isGood = true, textColor = textColorPrimary)
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                modifier = Modifier.fillMaxWidth().height(40.dp),
+                onClick = { navViewModel.start10sEvaluationMode() },
+                enabled = !navState.isEvaluationActive,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (navState.isEvaluationActive) Color(0xFFD97706) else Color(0xFF2563EB)
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Assessment,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (navState.isEvaluationActive) {
+                            "Testing... ${navState.evaluationTimeRemainingSec}s remaining"
+                        } else {
+                            "Run 10s Accuracy Test"
+                        },
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionManagementCard(
+    navState: NavigationState,
+    navViewModel: NavigationViewModel,
+    isDarkMode: Boolean
+) {
+    val context = LocalContext.current
     val cardBgColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
     val cardBorderColor = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
     val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
     val textColorSecondary = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B)
 
-    Column(
+    Card(
         modifier = Modifier
-            .fillMaxSize()
-            .background(screenBgColor)
-            .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 36.dp)
+            .fillMaxWidth()
+            .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        // TOP ARCHITECTURE HEADER
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = cardBgColor),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-        ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "SESSION SUMMARY & EXPORT TRACKS",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF2563EB),
+                letterSpacing = 0.5.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            StatusRow(label = "Track Points Recorded", value = "${navState.recordedPointCount} pts", isGood = navState.recordedPointCount > 0, textColor = textColorPrimary)
+            StatusRow(label = "Total Session Distance", value = formatDistance(navState.distanceMeters), isGood = true, textColor = textColorPrimary)
+            StatusRow(label = "Navigation Source", value = navState.navigationSource, isGood = true, textColor = textColorPrimary)
+
+            Spacer(modifier = Modifier.height(12.dp))
+            HorizontalDivider(color = cardBorderColor.copy(alpha = 0.5f))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            val canExport = navState.recordedPointCount > 0
+
+            Text(
+                text = "Export Trajectory Data",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = textColorSecondary
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = onOpenDrawer,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Text("≡", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = textColorPrimary)
-                    }
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "SYSTEM ARCHITECTURE",
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Black,
-                            color = textColorPrimary,
-                            letterSpacing = 0.3.sp,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        Text(
-                            text = "Live Hardware Sensors & Filter Status",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = textColorSecondary,
-                            maxLines = 1
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                Button(
-                    onClick = onBackToMap,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Text("← MAP", fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, maxLines = 1)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // SECTION 1: SYSTEM ARCHITECTURE STATUS CARD (Except Motion Engine per user requirement)
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = cardBgColor),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "SYSTEM ARCHITECTURE STATUS",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFF2563EB),
-                    letterSpacing = 0.5.sp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                val gnssDisplay = when {
-                    navState.blackoutMode -> "BLACKOUT"
-                    navState.gnssNavigationMode == "GNSS_RECOVERY" -> "RECOVERING"
-                    else -> navState.gnssStatus
-                }
-                val navDisplay = if (navState.blackoutMode) "DEAD RECKONING" else "GNSS"
-
-                StatusRow(label = "GNSS Fix", value = gnssDisplay, isGood = gnssDisplay == "AVAILABLE", textColor = textColorPrimary)
-                StatusRow(label = "Nav Provider", value = navDisplay, isGood = navDisplay == "GNSS", textColor = textColorPrimary)
-                // Note: Motion Engine omitted per user requirement ("except motiion")
-                val gateDisplay = "${navState.latestGateAction} (A:${navState.acceptedCount} C:${navState.clampedCount} R:${navState.rejectedCount})"
-                StatusRow(label = "ML Innovation Gate", value = gateDisplay, isGood = navState.latestGateAction == "ACCEPTED", textColor = textColorPrimary)
-                StatusRow(label = "ML Residual Model", value = navState.mlStatus, isGood = navState.mlStatus == "ACTIVE", textColor = textColorPrimary)
-                StatusRow(label = "EKF Filter State", value = navState.ekfStatus, isGood = navState.ekfStatus == "ACTIVE", textColor = textColorPrimary)
-                StatusRow(label = "Offline Tile Archive", value = navState.offlineMapStatus, isGood = navState.offlineMapStatus == "AVAILABLE", textColor = textColorPrimary)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // SECTION 2: HARDWARE SENSORS HEALTH CARD
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = cardBgColor),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "HARDWARE SENSORS HEALTH",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFF2563EB),
-                    letterSpacing = 0.5.sp
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                SensorStatusRow(name = "3-Axis Accelerometer", isActive = navState.accelerometerActive, textColor = textColorPrimary)
-                SensorStatusRow(name = "3-Axis Gyroscope", isActive = navState.gyroscopeActive, textColor = textColorPrimary)
-                SensorStatusRow(name = "Magnetometer / Rotation", isActive = navState.magnetometerActive, textColor = textColorPrimary)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // SECTION 3: LIVE TELEMETRY DETAILS
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = cardBgColor),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "LIVE FILTER & LATENCY TELEMETRY",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Color(0xFF2563EB),
-                    letterSpacing = 0.5.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(text = "• Heading Confidence: ${navState.headingConfidence}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = "• Position Uncertainty: ±${String.format(Locale.US, "%.1f m", navState.uncertaintyRadiusMeters)}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = "• ML Inference Latency: ${if (navState.mlInferenceLatencyMs > 0) "${navState.mlInferenceLatencyMs} ms" else "--"}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = textColorPrimary)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // SECTION 4: TECHNICAL EVALUATION / JUDGE PANEL
-        val m = navState.blackoutMetrics
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .border(1.dp, Color(0xFF2563EB), RoundedCornerShape(16.dp)),
-            colors = CardDefaults.cardColors(containerColor = if (isDarkMode) Color(0xFF1E293B) else Color(0xFFEFF6FF)),
-            shape = RoundedCornerShape(16.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "🏆 TECHNICAL EVALUATION / JUDGE PANEL",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFF2563EB),
-                        letterSpacing = 0.5.sp
-                    )
-                    if (navState.isSimulatedBlackout) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFFDC2626)
-                        ) {
-                            Text(
-                                text = "SIMULATED",
-                                fontSize = 8.5.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
+                ExportFormatButton(
+                    label = "GPX",
+                    canExport = canExport,
+                    isDarkMode = isDarkMode,
+                    onClick = {
+                        if (canExport) {
+                            navViewModel.exportGpxTrack(context)
+                        } else {
+                            Toast.makeText(context, "No trajectory points to export", Toast.LENGTH_SHORT).show()
                         }
-                    }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+
+                ExportFormatButton(
+                    label = "CSV",
+                    canExport = canExport,
+                    isDarkMode = isDarkMode,
+                    onClick = {
+                        if (canExport) {
+                            navViewModel.exportCsvTrack(context)
+                        } else {
+                            Toast.makeText(context, "No trajectory points to export", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+
+                ExportFormatButton(
+                    label = "JSON",
+                    canExport = canExport,
+                    isDarkMode = isDarkMode,
+                    onClick = {
+                        if (canExport) {
+                            navViewModel.exportJsonTrack(context)
+                        } else {
+                            Toast.makeText(context, "No trajectory points to export", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth().height(36.dp),
+                onClick = {
+                    navViewModel.clearSession()
+                    Toast.makeText(context, "Session history cleared", Toast.LENGTH_SHORT).show()
+                },
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color(0xFFDC2626)
+                ),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = Color(0xFFDC2626)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Clear Session Data", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
                 }
-                Spacer(modifier = Modifier.height(10.dp))
-                StatusRow(label = "Blackout Duration", value = String.format(Locale.US, "%.1f s", navState.blackoutDurationSeconds), isGood = true, textColor = textColorPrimary)
-                StatusRow(label = "DR Distance Travelled", value = String.format(Locale.US, "%.1f m", m.drDistance), isGood = true, textColor = textColorPrimary)
-                StatusRow(label = "Max Position Error", value = String.format(Locale.US, "%.1f m", m.maximumPositionErrorMeters), isGood = m.maximumPositionErrorMeters < 15.0, textColor = textColorPrimary)
-                StatusRow(label = "Final Position Error", value = String.format(Locale.US, "%.1f m", navState.positionErrorMeters), isGood = navState.positionErrorMeters < 10.0, textColor = textColorPrimary)
-                StatusRow(label = "ML Gate Decisions", value = "A:${m.numberOfAcceptedMLPredictions} C:${m.numberOfClampedMLPredictions} R:${m.numberOfRejectedMLPredictions}", isGood = true, textColor = textColorPrimary)
-                StatusRow(label = "Avg ML Latency", value = if (m.mlInferenceMs > 0) "${m.mlInferenceMs} ms" else "--", isGood = true, textColor = textColorPrimary)
             }
         }
+    }
+}
 
-        Spacer(modifier = Modifier.height(16.dp))
+@Composable
+private fun ExportFormatButton(
+    label: String,
+    canExport: Boolean,
+    isDarkMode: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = if (canExport) {
+        if (isDarkMode) Color(0xFF0F172A) else Color(0xFFEFF6FF)
+    } else {
+        if (isDarkMode) Color(0xFF1E293B) else Color(0xFFF1F5F9)
+    }
+    val contentColor = if (canExport) {
+        if (isDarkMode) Color(0xFF60A5FA) else Color(0xFF1D4ED8)
+    } else {
+        if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B)
+    }
+    val borderColor = if (canExport) {
+        if (isDarkMode) Color(0xFF3B82F6) else Color(0xFF2563EB)
+    } else {
+        if (isDarkMode) Color(0xFF334155) else Color(0xFFCBD5E1)
+    }
 
-        Button(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(48.dp),
-            onClick = onBackToMap,
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A)),
-            shape = RoundedCornerShape(12.dp)
-        ) {
-            Text("← RETURN TO MAP SCREEN", fontWeight = FontWeight.Bold, color = Color.White)
-        }
-
-        Spacer(modifier = Modifier.height(30.dp))
+    OutlinedButton(
+        modifier = modifier.height(36.dp),
+        contentPadding = PaddingValues(0.dp),
+        enabled = canExport,
+        onClick = onClick,
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = containerColor,
+            contentColor = contentColor,
+            disabledContainerColor = containerColor,
+            disabledContentColor = contentColor
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = contentColor
+        )
     }
 }
 
@@ -1669,7 +2182,7 @@ private fun PlainConfidenceCard(
 
 @Composable
 private fun QuickMetricCard(
-    icon: String,
+    icon: ImageVector,
     label: String,
     value: String,
     accentColor: Color = Color(0xFF2563EB),
@@ -1712,10 +2225,11 @@ private fun QuickMetricCard(
                     shape = RoundedCornerShape(8.dp),
                     color = accentColor.copy(alpha = 0.12f)
                 ) {
-                    Text(
-                        text = icon,
-                        fontSize = 13.sp,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 4.dp).size(16.dp),
+                        tint = accentColor
                     )
                 }
             }
@@ -1764,26 +2278,149 @@ private fun StatusRow(label: String, value: String, isGood: Boolean, textColor: 
 }
 
 @Composable
-private fun SensorStatusRow(name: String, isActive: Boolean, textColor: Color = Color(0xFF475569)) {
-    Row(
-        modifier = Modifier
+private fun MotionStatusCard(
+    navState: NavigationState,
+    isKinematicDemoActive: Boolean,
+    isDarkMode: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val cardBg = if (isDarkMode) Color(0xFF1E293B) else Color.White
+    val borderColor = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
+    val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+    val textColorSecondary = if (isDarkMode) Color(0xFF94A3B8) else Color(0xFF64748B)
+
+    val isDemoRunning = navState.isDemoModeEnabled && isKinematicDemoActive
+
+    val cardLabel = if (isDemoRunning) {
+        "Motion Status (Simulated)"
+    } else {
+        "Motion Status"
+    }
+
+    val (targetStatus, subtext) = when {
+        isDemoRunning -> {
+            if (navState.selectedDemoSpeed > 0f) {
+                "Moving" to String.format(Locale.US, "Software simulation active (%.0f km/h)", navState.selectedDemoSpeed)
+            } else {
+                "Stationary" to "Software simulation active (0 km/h)"
+            }
+        }
+        !navState.accelerometerActive || !navState.gyroscopeActive -> {
+            "Unavailable" to "Required motion sensors unavailable"
+        }
+        navState.motionState == "UNKNOWN" || navState.motionState == "DETECTING" || navState.motionState == "UNCERTAIN" -> {
+            "Detecting…" to "Analyzing sensor stream…"
+        }
+        navState.motionState == "MOVING" || navState.motionState == "WALKING" -> {
+            "Moving" to "Physical movement detected"
+        }
+        else -> {
+            val note = if (navState.motionState == "ROTATING_IN_PLACE") "Device still (in-place turn)" else "Device stationary"
+            "Stationary" to note
+        }
+    }
+
+    var currentStatus by remember { mutableStateOf(targetStatus) }
+    var currentSubtext by remember { mutableStateOf(subtext) }
+
+    androidx.compose.runtime.LaunchedEffect(targetStatus, subtext) {
+        if (targetStatus != currentStatus) {
+            kotlinx.coroutines.delay(150L)
+            currentStatus = targetStatus
+            currentSubtext = subtext
+        } else {
+            currentSubtext = subtext
+        }
+    }
+
+    val (statusColor, badgeBg, iconVector) = when (currentStatus) {
+        "Moving" -> Triple(
+            Color(0xFF2563EB),
+            if (isDarkMode) Color(0xFF1E3A8A) else Color(0xFFEFF6FF),
+            Icons.AutoMirrored.Filled.DirectionsWalk
+        )
+        "Stationary" -> Triple(
+            textColorSecondary,
+            if (isDarkMode) Color(0xFF0F172A) else Color(0xFFF1F5F9),
+            Icons.AutoMirrored.Filled.DirectionsWalk
+        )
+        "Detecting…" -> Triple(
+            Color(0xFFF59E0B),
+            if (isDarkMode) Color(0xFF422006) else Color(0xFFFFFBEB),
+            Icons.Default.Explore
+        )
+        else -> Triple(
+            Color(0xFFDC2626),
+            if (isDarkMode) Color(0xFF450A0A) else Color(0xFFFEF2F2),
+            Icons.Default.Warning
+        )
+    }
+
+    Card(
+        modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .border(1.dp, borderColor, RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Text(text = name, fontSize = 13.sp, color = textColor, fontWeight = FontWeight.Medium)
-        Surface(
-            shape = RoundedCornerShape(6.dp),
-            color = if (isActive) Color(0xFFECFDF5) else Color(0xFFFEF2F2)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (isActive) "ONLINE" else "OFFLINE",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.ExtraBold,
-                color = if (isActive) Color(0xFF047857) else Color(0xFFDC2626),
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = cardLabel.uppercase(Locale.US),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Black,
+                    color = textColorSecondary,
+                    letterSpacing = 0.5.sp,
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = currentStatus,
+                    fontSize = 16.5.sp,
+                    fontWeight = FontWeight.Black,
+                    color = if (currentStatus == "Moving") Color(0xFF2563EB) else textColorPrimary
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = currentSubtext,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = textColorSecondary,
+                    maxLines = 1
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = badgeBg,
+                border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.3f))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = iconVector,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = statusColor
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = currentStatus,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = statusColor
+                    )
+                }
+            }
         }
     }
 }
@@ -1839,10 +2476,15 @@ private fun KinematicDemoControlCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🎮", fontSize = 16.sp)
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = textPrimary
+                    )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Kinematic Demo Controls",
+                        text = "Blackout Mode",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold,
                         color = textPrimary
@@ -1858,9 +2500,9 @@ private fun KinematicDemoControlCard(
                 ) {
                     Text(
                         text = when {
-                            navViewModel.isKinematicDemoActive -> "DEMO ACTIVE"
-                            navState.demoTrailPoints.isNotEmpty() -> "DEMO STOPPED"
-                            else -> "DEMO READY"
+                            navViewModel.isKinematicDemoActive -> "Demo Active"
+                            navState.demoTrailPoints.isNotEmpty() -> "Demo Stopped"
+                            else -> "Demo Ready"
                         },
                         fontSize = 9.sp,
                         fontWeight = FontWeight.ExtraBold,
@@ -1993,12 +2635,12 @@ private fun KinematicDemoControlCard(
                 ) {
                     Text(
                         text = when {
-                            navViewModel.isKinematicDemoActive -> "🛑 STOP DEMO"
-                            navState.demoTrailPoints.isNotEmpty() -> "▶ RUN AGAIN"
-                            else -> "▶ START DEMO"
+                            navViewModel.isKinematicDemoActive -> "Stop Demo"
+                            navState.demoTrailPoints.isNotEmpty() -> "Run Again"
+                            else -> "Start Demo"
                         },
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.ExtraBold
+                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -2011,7 +2653,7 @@ private fun KinematicDemoControlCard(
                     ),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("📍 RESET ANCHOR", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Reset Anchor", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -2084,5 +2726,63 @@ private fun shareActiveLocation(context: Context, navState: NavigationState) {
     } catch (e: Exception) {
         Log.w("NavigationScreen", "Could not launch Share Intent: ${e.message}")
         Toast.makeText(context, "Unable to launch Share sheet", Toast.LENGTH_SHORT).show()
+    }
+}
+
+@Composable
+private fun SosDiagnosticsCard(
+    sosViewModel: com.example.gudumap.sos.SosViewModel,
+    isDarkMode: Boolean
+) {
+    val cardBgColor = if (isDarkMode) Color(0xFF1E293B) else Color.White
+    val cardBorderColor = if (isDarkMode) Color(0xFF334155) else Color(0xFFE2E8F0)
+    val textColorPrimary = if (isDarkMode) Color(0xFFF8FAFC) else Color(0xFF0F172A)
+
+    val isBtOn = sosViewModel.isBluetoothEnabled()
+    val isScanPermission = sosViewModel.hasScanPermission()
+    val isAdvPermission = sosViewModel.hasAdvertisePermission()
+    val isConnectPermission = sosViewModel.hasConnectPermission()
+    val isNearbyGranted = isScanPermission && isAdvPermission && isConnectPermission
+
+    val isScannerActive by sosViewModel.isScannerActive.collectAsState()
+    val lastAdvTimeMs by sosViewModel.lastAdvTimeMs.collectAsState()
+    val totalPacketsReceived by sosViewModel.totalPacketsReceived.collectAsState()
+
+    val context = LocalContext.current
+    val isNotifPermission = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    } else true
+
+    val lastAdvSecAgo = if (lastAdvTimeMs > 0L) {
+        "${(System.currentTimeMillis() - lastAdvTimeMs) / 1000L}s ago"
+    } else {
+        "Never"
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, cardBorderColor, RoundedCornerShape(16.dp)),
+        colors = CardDefaults.cardColors(containerColor = cardBgColor),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "BLE SOS DIAGNOSTICS & HARDWARE STATUS",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = Color(0xFF2563EB),
+                letterSpacing = 0.5.sp
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            StatusRow(label = "Bluetooth Hardware", value = if (isBtOn) "ON" else "OFF", isGood = isBtOn, textColor = textColorPrimary)
+            StatusRow(label = "Nearby Devices Permission", value = if (isNearbyGranted) "GRANTED" else "DENIED", isGood = isNearbyGranted, textColor = textColorPrimary)
+            StatusRow(label = "SOS BLE Scanner", value = if (isScannerActive) "ACTIVE" else "INACTIVE", isGood = isScannerActive, textColor = textColorPrimary)
+            StatusRow(label = "Last BLE Advertisement", value = lastAdvSecAgo, isGood = lastAdvTimeMs > 0L, textColor = textColorPrimary)
+            StatusRow(label = "SOS Packets Received", value = "$totalPacketsReceived", isGood = totalPacketsReceived > 0, textColor = textColorPrimary)
+            StatusRow(label = "Notification Permission", value = if (isNotifPermission) "GRANTED" else "DENIED", isGood = isNotifPermission, textColor = textColorPrimary)
+        }
     }
 }

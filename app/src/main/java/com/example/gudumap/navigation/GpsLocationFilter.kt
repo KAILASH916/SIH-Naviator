@@ -220,7 +220,7 @@ class GpsLocationFilter {
         // Spike limiting on speed change rate (max 4.0 m/s^2 acceleration/deceleration)
         val maxSpeedDelta = 4.0f * dtSec.toFloat()
         val speedDelta = candidateSpeedMps - previousSpeedMps
-        val rawSpeedMps = if (kotlin.math.abs(speedDelta) > maxSpeedDelta && previousSpeedMps > 0f) {
+        val rawSpeedMps = if (kotlin.math.abs(speedDelta) > maxSpeedDelta) {
             (previousSpeedMps + kotlin.math.sign(speedDelta) * maxSpeedDelta).coerceAtLeast(0f)
         } else {
             candidateSpeedMps.coerceAtLeast(0f)

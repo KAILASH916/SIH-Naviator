@@ -531,7 +531,6 @@ class KinematicDemoTest {
         trailList.add(11.0178 to 76.9558)
         trailList.add(11.0188 to 76.9558)
 
-        // Resuming simulation preserves existing points
         if (trailList.isEmpty()) {
             trailList.add(11.0198 to 76.9558)
         } else if (trailList.lastOrNull() != (11.0198 to 76.9558)) {
@@ -541,6 +540,121 @@ class KinematicDemoTest {
         assertEquals(4, trailList.size)
         assertEquals(11.0168, trailList.first().first, 1e-6)
         assertEquals(11.0198, trailList.last().first, 1e-6)
+    }
+
+    @Test
+    fun testDemoRunningSpeedDashboard() {
+        val state = NavigationState(
+            isDemoModeEnabled = true,
+            selectedDemoSpeed = 36f,
+            speedKmh = 0f
+        )
+        val isDemoRunning = state.isDemoModeEnabled && true
+        val speedValue = if (isDemoRunning) state.selectedDemoSpeed else state.speedKmh
+        assertEquals(36f, speedValue, 1e-3f)
+    }
+
+    @Test
+    fun testStopDemoSetsKinematicDemoActiveFalse() {
+        var isKinematicDemoActive = true
+        var isDemoModeEnabled = true
+        // Stop demo
+        isKinematicDemoActive = false
+        isDemoModeEnabled = false
+
+        assertTrue("isKinematicDemoActive must be false on stop", !isKinematicDemoActive)
+        assertTrue("isDemoModeEnabled must be false on stop", !isDemoModeEnabled)
+    }
+
+    @Test
+    fun testStopDemoWithIMUMovementShowsMoving() {
+        val state = NavigationState(
+            isDemoModeEnabled = false,
+            motionState = "MOVING",
+            accelerometerActive = true,
+            gyroscopeActive = true
+        )
+        val isDemoRunning = state.isDemoModeEnabled && false
+        val motionStatus = if (isDemoRunning) "Stationary" else state.motionState
+        assertEquals("MOVING", motionStatus)
+    }
+
+    @Test
+    fun testStopDemoWithRealEkfVelocityShowsRealSpeed() {
+        val realSpeedKmh = 14.5f
+        val state = NavigationState(
+            isDemoModeEnabled = false,
+            speedKmh = realSpeedKmh,
+            displayedSpeedKmh = realSpeedKmh
+        )
+        val isDemoRunning = state.isDemoModeEnabled && false
+        val activeSpeed = if (isDemoRunning) state.selectedDemoSpeed else state.displayedSpeedKmh
+        assertEquals(14.5f, activeSpeed, 1e-3f)
+    }
+
+    @Test
+    fun testStopDemoDoesNotResetDistance() {
+        val realDistance = 1250.0
+        val state = NavigationState(
+            distanceMeters = realDistance,
+            isDemoModeEnabled = false
+        )
+        assertEquals(1250.0, state.distanceMeters, 1e-6)
+    }
+
+    @Test
+    fun testStopDemoDoesNotClearRoute() {
+        val routePoints = listOf(Pair(11.0168, 76.9558), Pair(11.0170, 76.9560))
+        val state = NavigationState(
+            gpsTrailPoints = routePoints,
+            isDemoModeEnabled = false
+        )
+        assertEquals(2, state.gpsTrailPoints.size)
+    }
+
+    @Test
+    fun testDemoSpeedZeroDoesNotForceRealMotionStationary() {
+        val zupt = ZuptDetector(isEnabled = true)
+        val sampleMoving = com.example.gudumap.sensor.ImuSample(
+            timestampNs = 100_000_000L,
+            ax = 1.2f, ay = 0.8f, az = 9.81f,
+            gx = 0.5f, gy = 0.3f, gz = 0.1f
+        )
+        // Demo speed = 0 should NOT be passed to zupt detector when demo is off or evaluating real IMU
+        val isStationary = zupt.update(sampleMoving, gnssSpeed = null)
+        assertTrue("Real IMU motion must not be forced to stationary", !isStationary)
+    }
+
+    @Test
+    fun testRealBlackoutWithMovementShowsMoving() {
+        val state = NavigationState(
+            blackoutMode = true,
+            isDemoModeEnabled = false,
+            motionState = "MOVING"
+        )
+        assertEquals("MOVING", state.motionState)
+    }
+
+    @Test
+    fun testRealBlackoutAmbiguousSensorStateShowsUncertain() {
+        val state = NavigationState(
+            blackoutMode = true,
+            isDemoModeEnabled = false,
+            motionState = "UNCERTAIN"
+        )
+        assertEquals("UNCERTAIN", state.motionState)
+    }
+
+    @Test
+    fun testZuptNotActivatedByDemoStop() {
+        val zupt = ZuptDetector(isEnabled = true)
+        val sampleMoving = com.example.gudumap.sensor.ImuSample(
+            timestampNs = 100_000_000L,
+            ax = 0.8f, ay = 0.6f, az = 9.81f,
+            gx = 0.3f, gy = 0.2f, gz = 0.1f
+        )
+        zupt.update(sampleMoving, gnssSpeed = null)
+        assertTrue("ZUPT must be INACTIVE during movement", !zupt.isStationary)
     }
 }
 

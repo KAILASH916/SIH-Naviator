@@ -6,11 +6,6 @@ enum class NavigationVisualMode {
     GPS_FALLBACK  // GPS lost/stale, prediction active (RED marker, RED trail, ORANGE prediction circle)
 }
 
-enum class MapOrientationMode {
-    NORTH_UP,     // Map stays static facing North
-    HEADING_UP    // Map rotates so the heading/movement direction faces UP
-}
-
 enum class MovementState {
     UNKNOWN,
     STATIONARY,
@@ -23,7 +18,6 @@ enum class MovementState {
  * Immutable navigation state emitted by the navigation engine to the ViewModel and UI.
  */
 data class NavigationState(
-    val mapOrientationMode: MapOrientationMode = MapOrientationMode.NORTH_UP,
     val movementState: MovementState = MovementState.STATIONARY,
     val latitude: Double = 0.0, // 0.0/0.0 is a "no real fix yet" sentinel -- see hasGpsFix
     val longitude: Double = 0.0,
@@ -104,9 +98,39 @@ data class NavigationState(
     val filteredHeadingDeg: Float = 0f,
     val gpsFixAgeMs: Long = 0L,
     val noFixReason: String = "",
+    val rawSpeedKmh: Float = 0f,
+    val filteredSpeedKmh: Float = 0f,
+    val displayedSpeedKmh: Float = 0f,
+    val isEvaluationActive: Boolean = false,
+    val evaluationTimeRemainingSec: Int = 0,
     val navigationSource: String = "GPS", // "GPS" / "DEMO" / "GPX_REPLAY" / "CSV_REPLAY"
+    val positionSource: String = "FUSED", // "FUSED" / "DEAD_RECKONING" / "MAP_MATCHED" / "DEMO"
+    val speedSource: String = "GNSS + EKF", // "GNSS + EKF" / "EKF + AI" / "DEMO"
+    val headingSource: String = "FUSED ORIENTATION", // "FUSED ORIENTATION" / "INERTIAL ORIENTATION"
+    val accuracySource: String = "GNSS ACCURACY", // "GNSS ACCURACY" / "ESTIMATED UNCERTAINTY"
+    val locationServicesEnabled: Boolean = true,
+    val locationPermissionGranted: Boolean = true,
+    val locationCallbackActive: Boolean = true,
+    val lastAnyGnssFixAgeSeconds: Long? = null,
+    val acceptedGnssFixCount: Int = 0,
+    val rejectedGnssFixCount: Int = 0,
+    val appState: String = "INITIALIZING", // "INITIALIZING" / "ACQUIRING" / "READY"
+    val gnssState: String = "ACQUIRING", // "ACQUIRING" / "GOOD" / "DEGRADED" / "BLACKOUT" / "RECOVERING"
+    val stationaryConfidence: String = "HIGH", // "HIGH" / "MEDIUM" / "LOW"
+    val navigationConfidence: String = "HIGH", // "HIGH" / "MEDIUM" / "LOW"
+    val zuptActive: Boolean = false,
+    val isMountCalibrated: Boolean = false,
+    val mountPitchDeg: Float = 0f,
+    val mountRollDeg: Float = 0f,
+    val mountYawDeg: Float = 0f,
+    val onnxInferenceTimeMs: Long = 0L,
+    val estimatorUpdateTimeMs: Long = 0L,
+    val mapMatchingTimeMs: Long = 0L,
+    val uiPublishRateHz: Float = 10.0f,
+    val sensorRateHz: Float = 50.0f,
     val timestampNs: Long = System.nanoTime()
 )
+
 
 data class LkMarkerData(
     val id: String,

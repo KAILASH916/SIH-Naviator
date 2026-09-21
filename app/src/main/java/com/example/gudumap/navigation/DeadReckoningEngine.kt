@@ -598,22 +598,28 @@ class DeadReckoningEngine(
         val bounded =
             rawSpeedMps.coerceAtMost(MAX_PLAUSIBLE_SPEED_MPS)
 
-        if (timestampNs <= 0L) return null
+        val validTimestamp = if (timestampNs > 0L) {
+            timestampNs
+        } else {
+            System.nanoTime()
+        }
 
-        if (lastGnssSpeedTimestampNs == 0L) {
-            lastGnssSpeedTimestampNs = timestampNs
+        if (lastGnssSpeedTimestampNs == 0L ||
+            (validTimestamp - lastGnssSpeedTimestampNs) > SAMPLE_GAP_RESET_NS
+        ) {
+            lastGnssSpeedTimestampNs = validTimestamp
             lastSanitizedGnssSpeed = bounded
             return bounded
         }
 
-        if (timestampNs < lastGnssSpeedTimestampNs) return null
+        if (validTimestamp < lastGnssSpeedTimestampNs) return null
 
-        if (timestampNs == lastGnssSpeedTimestampNs) {
+        if (validTimestamp == lastGnssSpeedTimestampNs) {
             return lastSanitizedGnssSpeed
         }
 
         val dt = (
-                (timestampNs - lastGnssSpeedTimestampNs) /
+                (validTimestamp - lastGnssSpeedTimestampNs) /
                         1_000_000_000.0
                 ).toFloat()
 
@@ -626,7 +632,7 @@ class DeadReckoningEngine(
             bounded
         }
 
-        lastGnssSpeedTimestampNs = timestampNs
+        lastGnssSpeedTimestampNs = validTimestamp
         lastSanitizedGnssSpeed = sanitized
         return sanitized
     }
@@ -1528,9 +1534,9 @@ class DeadReckoningEngine(
 
             val stationary = when {
                 speedFromSteps > 0f -> false
-                speedFromEkf > 0.1f -> false
+                speedFromEkf > 0.3f -> false
                 pedestrian -> true
-                else -> zuptDetector.isNavStationary
+                else -> zuptDetector.isNavStationary || speedFromEkf < 0.1f
             }
 
             var speed = if (pedestrian && speedFromSteps > 0f) {

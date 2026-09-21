@@ -80,4 +80,20 @@ class CoordinateTransformerTest {
         assertEquals(originLat + 1.0, newLat, 0.02)
         assertEquals(originLon, newLon, 1e-6)
     }
+
+    @Test
+    fun testEnuToNedAndNedToEnuConversion() {
+        val enu = floatArrayOf(10.0f, 20.0f, 5.0f) // East=10, North=20, Up=5
+        val ned = CoordinateTransformer.enuToNed(enu)
+
+        assertEquals(20.0f, ned[0], 1e-5f) // North = ENU.y = 20
+        assertEquals(10.0f, ned[1], 1e-5f) // East = ENU.x = 10
+        assertEquals(-5.0f, ned[2], 1e-5f) // Down = -ENU.z = -5
+
+        val roundTripEnu = CoordinateTransformer.nedToEnu(ned)
+        assertEquals(enu[0], roundTripEnu[0], 1e-5f)
+        assertEquals(enu[1], roundTripEnu[1], 1e-5f)
+        assertEquals(enu[2], roundTripEnu[2], 1e-5f)
+    }
 }
+
